@@ -7,11 +7,13 @@
 - 一键循环切换所有已注册主题，也可以通过下拉框直接选择。
 - 内置白天和夜晚主题，并允许其他编辑器模块注册更多主题。
 - Slate/C++ 每 300ms 生成一次有边界的随机游走数据。
-- 同一份 C++ 仿真快照驱动四张 ECharts 图：
+- 同一份 C++ 仿真快照驱动六张 ECharts 图：
   - 实时负载折线图；
   - 五站点动态折线图：X 轴为采样时间，Y 轴为仿真数据值，站点 A～E 使用蓝、橙、绿、红、紫五种高区分度颜色，并隐藏采样点圆点；
   - 站点处理量柱状图；
-  - 资源分布饼图。
+  - 资源分布饼图；
+  - 站点多指标雷达图：对比每个站点当前的负载、处理量与资源权重；
+  - 站点负载热力图：按“最近采样时间 × 站点”展示历史负载强度。
 - Slate 按钮可以开始或停止仿真；停止后保留最后一帧数据，再次开始时从原值继续。
 - C++ 数据源先四舍五入到小数点后两位，图表标签、提示框和摘要卡片统一显示两位小数。
 - ECharts 脚本存放在插件本地，不需要访问网络。
@@ -30,11 +32,11 @@
 
 `SThemeSwitcherPanel` 是唯一的仿真数据源：
 
-- `SimulationLoadValues`：折线图的实时负载；
-- `SimulationThroughputValues`：柱状图的处理量；
-- `SimulationDistributionValues`：饼图的资源分布权重；
-- `SimulationLoadHistory`：每个站点最近 32 个负载采样，用于动态多站点折线图；
-- `SimulationHistoryTimestamps`：所有站点共用的 300ms 逻辑采样时间轴，停止仿真时同步冻结；
+- `SimulationLoadValues`：折线图的实时负载，也作为雷达图的负载维度；
+- `SimulationThroughputValues`：柱状图的处理量，也作为雷达图的处理量维度；
+- `SimulationDistributionValues`：饼图的资源分布权重，也作为雷达图的资源权重维度；
+- `SimulationLoadHistory`：每个站点最近 32 个负载采样，用于动态多站点折线图和热力图；
+- `SimulationHistoryTimestamps`：动态折线图与热力图共用的 300ms 逻辑采样时间轴，停止仿真时同步冻结；
 - `bSimulationRunning`：控制 ActiveTimer 是否更新数据；
 - `PushSimulationData()`：把完整 JSON 快照发送给内嵌页面。
 

@@ -90,9 +90,11 @@
         .charts-grid {
             display: grid;
             grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.75fr);
-            grid-template-rows: minmax(0, 0.9fr) minmax(0, 1.25fr) minmax(0, 0.9fr);
+            grid-template-rows: repeat(4, minmax(220px, 1fr));
             gap: 12px;
             min-height: 0;
+            overflow-y: auto;
+            padding-right: 4px;
         }
 
         .chart-card {
@@ -147,7 +149,7 @@
 
             .charts-grid {
                 grid-template-columns: 1fr;
-                grid-template-rows: repeat(4, minmax(260px, 1fr));
+                grid-template-rows: repeat(6, minmax(260px, 1fr));
                 overflow-y: auto;
             }
 
@@ -196,6 +198,12 @@
             <article class="chart-card">
                 <div id="pie-chart" class="chart" role="img" aria-label="各站点资源分布饼图"></div>
             </article>
+            <article class="chart-card">
+                <div id="heatmap-chart" class="chart" role="img" aria-label="各站点最近采样负载热力图"></div>
+            </article>
+            <article class="chart-card">
+                <div id="radar-chart" class="chart" role="img" aria-label="各站点多指标雷达图"></div>
+            </article>
         </section>
     </main>
 
@@ -206,18 +214,18 @@
             running: true,
             intervalMs: 300,
             sampleIndex: 0,
-            names: ["站点 A", "站点 B", "站点 C", "站点 D", "站点 E", "站点 F", "站点 G", "站点 H"],
-            loadValues: [42.00, 55.00, 48.00, 63.00, 58.00, 70.00, 51.00, 66.00],
-            throughputValues: [88.00, 112.00, 95.00, 138.00, 126.00, 154.00, 101.00, 142.00],
-            distributionValues: [18.00, 24.00, 16.00, 30.00, 22.00, 34.00, 20.00, 28.00],
+            names: ["站点 A", "站点 B", "站点 C", "站点 D", "站点 E"],
+            loadValues: [42.00, 55.00, 48.00, 63.00, 58.00],
+            throughputValues: [88.00, 112.00, 95.00, 138.00, 126.00],
+            distributionValues: [18.00, 24.00, 16.00, 30.00, 22.00],
             historyCapacity: 32,
             historyTimestamps: [],
             stationHistorySeries: [],
             summary: {
-                averageLoad: 56.63,
-                peakLoad: 70.00,
-                totalThroughput: 956.00,
-                totalDistribution: 192.00
+                averageLoad: 53.20,
+                peakLoad: 63.00,
+                totalThroughput: 559.00,
+                totalDistribution: 110.00
             },
             palette: {
                 background: "#ffffff",
@@ -252,6 +260,14 @@
             useDirtyRect: true
         });
         const pieChart = echarts.init(document.getElementById("pie-chart"), null, {
+            renderer: "canvas",
+            useDirtyRect: true
+        });
+        const heatmapChart = echarts.init(document.getElementById("heatmap-chart"), null, {
+            renderer: "canvas",
+            useDirtyRect: true
+        });
+        const radarChart = echarts.init(document.getElementById("radar-chart"), null, {
             renderer: "canvas",
             useDirtyRect: true
         });
@@ -692,6 +708,254 @@
             }, true);
         }
 
+        function renderHeatmapChart() {
+            const stationNames = state.stationHistorySeries.map((stationSeries, index) => (
+                stationSeries.name || state.names[index] || `站点 ${index + 1}`
+            ));
+            const heatmapData = [];
+
+            // 把 C++ 的“每站点一条历史数组”展开为 ECharts 热力图要求的 [时间索引, 站点索引, 数值]。
+            state.stationHistorySeries.forEach((stationSeries, stationIndex) => {
+                const values = Array.isArray(stationSeries.values) ? stationSeries.values : [];
+                values.forEach((value, timeIndex) => {
+                    const numericValue = Number(value);
+                    if (timeIndex < state.historyTimestamps.length && Number.isFinite(numericValue)) {
+                        heatmapData.push([timeIndex, stationIndex, numericValue]);
+                    }
+                });
+            });
+
+            heatmapChart.setOption({
+                backgroundColor: state.palette.surface,
+                animationDurationUpdate: 240,
+                textStyle: {
+                    color: state.palette.primaryText,
+                    fontFamily: "Microsoft YaHei UI, Segoe UI, sans-serif"
+                },
+                title: makeTitle("站点负载热力图", "X 轴：最近采样时间 · Y 轴：站点名称 · 颜色：负载强度"),
+                grid: {
+                    left: 68,
+                    right: 24,
+                    top: 76,
+                    bottom: 74
+                },
+                tooltip: {
+                    position: "top",
+                    backgroundColor: state.palette.surface,
+                    borderColor: state.palette.divider,
+                    borderWidth: 1,
+                    textStyle: {
+                        color: state.palette.primaryText
+                    },
+                    formatter: params => {
+                        const point = Array.isArray(params.value) ? params.value : [];
+                        const timestamp = state.historyTimestamps[point[0]];
+                        const stationName = stationNames[point[1]] || "未知站点";
+                        return `${stationName}<br>${formatSampleTime(timestamp)}<br>负载：${formatNumber(point[2])}%`;
+                    }
+                },
+                xAxis: {
+                    type: "category",
+                    name: "采样时间",
+                    data: state.historyTimestamps,
+                    splitArea: {
+                        show: true,
+                        areaStyle: {
+                            color: ["transparent", hexToRgba(state.palette.divider, 0.12)]
+                        }
+                    },
+                    axisLabel: {
+                        color: state.palette.secondaryText,
+                        fontSize: 9,
+                        hideOverlap: true,
+                        formatter: (value, index) => index % 4 === 0 ? formatSampleTime(value) : ""
+                    },
+                    axisLine: {
+                        lineStyle: {
+                            color: state.palette.divider
+                        }
+                    },
+                    nameTextStyle: {
+                        color: state.palette.secondaryText,
+                        fontSize: 10
+                    }
+                },
+                yAxis: {
+                    type: "category",
+                    name: "站点",
+                    data: stationNames,
+                    axisLabel: {
+                        color: state.palette.secondaryText,
+                        fontSize: 10
+                    },
+                    axisLine: {
+                        lineStyle: {
+                            color: state.palette.divider
+                        }
+                    },
+                    nameTextStyle: {
+                        color: state.palette.secondaryText,
+                        fontSize: 10
+                    }
+                },
+                visualMap: {
+                    min: 0,
+                    max: 100,
+                    calculable: false,
+                    orient: "horizontal",
+                    left: "center",
+                    bottom: 8,
+                    itemWidth: 12,
+                    itemHeight: 120,
+                    text: ["高", "低"],
+                    textStyle: {
+                        color: state.palette.secondaryText,
+                        fontSize: 9
+                    },
+                    inRange: {
+                        // 半透明起始色能同时适配白天与夜晚背景，高负载使用暖色突出。
+                        color: [
+                            hexToRgba(state.palette.accent, 0.08),
+                            hexToRgba(state.palette.accent, 0.52),
+                            state.palette.accent,
+                            "#f97316",
+                            "#e11d48"
+                        ]
+                    }
+                },
+                series: [{
+                    name: "负载强度",
+                    type: "heatmap",
+                    data: heatmapData,
+                    progressive: 0,
+                    label: {
+                        show: false
+                    },
+                    itemStyle: {
+                        borderColor: state.palette.surface,
+                        borderWidth: 1,
+                        borderRadius: 2
+                    },
+                    emphasis: {
+                        itemStyle: {
+                            borderColor: state.palette.primaryText,
+                            borderWidth: 1,
+                            shadowBlur: 8,
+                            shadowColor: hexToRgba(state.palette.primaryText, 0.28)
+                        }
+                    }
+                }]
+            }, true);
+        }
+
+        function renderRadarChart() {
+            // 三个维度采用各自真实量纲和固定上限，ECharts 会自动把它们归一到同一雷达坐标系。
+            const radarIndicators = [
+                { name: "负载（%）", max: 100 },
+                { name: "处理量", max: 220 },
+                { name: "资源权重", max: 80 }
+            ];
+            const radarData = state.names.map((name, index) => {
+                const color = stationColors[index % stationColors.length];
+                return {
+                    name,
+                    value: [
+                        Number(state.loadValues[index] ?? 0),
+                        Number(state.throughputValues[index] ?? 0),
+                        Number(state.distributionValues[index] ?? 0)
+                    ],
+                    lineStyle: {
+                        color,
+                        width: 2
+                    },
+                    itemStyle: {
+                        color
+                    },
+                    areaStyle: {
+                        color: hexToRgba(color, 0.10)
+                    }
+                };
+            });
+
+            radarChart.setOption({
+                backgroundColor: state.palette.surface,
+                animationDurationUpdate: 240,
+                color: stationColors,
+                textStyle: {
+                    color: state.palette.primaryText,
+                    fontFamily: "Microsoft YaHei UI, Segoe UI, sans-serif"
+                },
+                title: makeTitle("站点多指标雷达图", "负载、处理量与资源权重的当前值对比"),
+                legend: {
+                    type: "scroll",
+                    left: 16,
+                    right: 16,
+                    top: 52,
+                    itemWidth: 14,
+                    itemHeight: 8,
+                    textStyle: {
+                        color: state.palette.secondaryText,
+                        fontSize: 9
+                    }
+                },
+                tooltip: {
+                    trigger: "item",
+                    backgroundColor: state.palette.surface,
+                    borderColor: state.palette.divider,
+                    borderWidth: 1,
+                    textStyle: {
+                        color: state.palette.primaryText
+                    },
+                    formatter: params => {
+                        const values = Array.isArray(params.value) ? params.value : [];
+                        const rows = radarIndicators.map((indicator, index) => (
+                            `${indicator.name}：${formatNumber(values[index])}`
+                        ));
+                        return [`${params.marker}${params.name}`, ...rows].join("<br>");
+                    }
+                },
+                radar: {
+                    center: ["50%", "61%"],
+                    radius: "54%",
+                    indicator: radarIndicators,
+                    splitNumber: 4,
+                    axisName: {
+                        color: state.palette.secondaryText,
+                        fontSize: 10
+                    },
+                    axisLine: {
+                        lineStyle: {
+                            color: state.palette.divider
+                        }
+                    },
+                    splitLine: {
+                        lineStyle: {
+                            color: state.palette.divider,
+                            opacity: 0.8
+                        }
+                    },
+                    splitArea: {
+                        areaStyle: {
+                            color: ["transparent", hexToRgba(state.palette.accent, 0.035)]
+                        }
+                    }
+                },
+                series: [{
+                    name: "站点综合指标",
+                    type: "radar",
+                    symbol: "circle",
+                    symbolSize: 3,
+                    data: radarData,
+                    emphasis: {
+                        focus: "series",
+                        lineStyle: {
+                            width: 3
+                        }
+                    }
+                }]
+            }, true);
+        }
+
         function renderDashboard() {
             applyPalette();
             renderSummary();
@@ -699,6 +963,8 @@
             renderMultiLineChart();
             renderBarChart();
             renderPieChart();
+            renderHeatmapChart();
+            renderRadarChart();
         }
 
         // C++ 每次发送完整快照；数组复制可以避免外部脚本意外修改 Slate 数据镜像。
@@ -736,6 +1002,8 @@
             multiLineChart.resize();
             barChart.resize();
             pieChart.resize();
+            heatmapChart.resize();
+            radarChart.resize();
         });
 
         renderDashboard();
