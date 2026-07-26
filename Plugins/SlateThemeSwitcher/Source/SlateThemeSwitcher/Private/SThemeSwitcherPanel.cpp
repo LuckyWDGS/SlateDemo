@@ -23,6 +23,44 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogSlateThemeChart, Log, All);
 
+namespace
+{
+    /** Slate ActiveTimer 的更新间隔，同时会随数据快照发送给网页用于状态说明。 */
+    constexpr float SimulationIntervalSeconds = 0.3f;
+
+    /** 多站点折线图保留的历史采样数量，固定上限可以避免编辑器长时间运行后持续占用内存。 */
+    constexpr int32 SimulationHistoryCapacity = 32;
+
+    /**
+     * 仿真数据在 C++ 数据源处就统一保留两位小数。
+     * 网页端仍会使用 toFixed(2) 格式化，保证 12.5 也显示成 12.50。
+     */
+    float RoundToTwoDecimals(const float Value)
+    {
+        return FMath::RoundToFloat(Value * 100.0f) / 100.0f;
+    }
+
+    /** 将浮点数组转换为 UE JSON 数值数组，供多个图表复用同一套序列化逻辑。 */
+    TArray<TSharedPtr<FJsonValue>> MakeNumberJsonArray(const TArray<float>& Values)
+    {
+        TArray<TSharedPtr<FJsonValue>> JsonValues;
+        JsonValues.Reserve(Values.Num());
+        for (const float Value : Values)
+        {
+            JsonValues.Add(MakeShared<FJsonValueNumber>(Value));
+        }
+        return JsonValues;
+    }
+
+    /** ECharts 的 time 轴使用 Unix 毫秒时间戳；保留毫秒精度才能体现 300ms 的采样间隔。 */
+    double DateTimeToUnixMilliseconds(const FDateTime& DateTime)
+    {
+        static const FDateTime UnixEpoch(1970, 1, 1);
+        return static_cast<double>((DateTime - UnixEpoch).GetTicks())
+            / static_cast<double>(ETimespan::TicksPerMillisecond);
+    }
+}
+
 void SThemeSwitcherPanel::Construct(const FArguments& InArgs)
 {
     // AddSP 会使用当前 Slate 控件的共享指针生命周期，控件销毁后不会被委托继续调用。
@@ -37,7 +75,7 @@ void SThemeSwitcherPanel::Construct(const FArguments& InArgs)
 
     // ActiveTimer 在普通编辑器状态下也会稳定触发，不需要依赖关卡 Tick 或 PIE。
     SimulationTimerHandle = RegisterActiveTimer(
-        0.3f,
+        SimulationIntervalSeconds,
         FWidgetActiveTimerDelegate::CreateSP(this, &SThemeSwitcherPanel::HandleSimulationTick));
 }
 
@@ -341,7 +379,7 @@ TSharedRef<SWidget> SThemeSwitcherPanel::BuildContent()
                     ]
                 ]
 
-                // 实时仿真图表：X 轴是站点名称，Y 轴是 0~100 的动态数值。
+                // 多图表仿真仪表板：所有图表数据都由本 Slate 控件生成并统一推送。
                 + SVerticalBox::Slot()
                 .AutoHeight()
                 .Padding(24.0f, 0.0f, 24.0f, 12.0f)
@@ -390,57 +428,217 @@ TSharedRef<SWidget> SThemeSwitcherPanel::BuildChartPanel()
     return SNew(SBorder)
         .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
         .BorderBackgroundColor(this, &SThemeSwitcherPanel::GetPanelColor)
-        .Padding(1.0f)
+        .Padding(18.0f)
         [
-            SNew(SBox)
-            .HeightOverride(380.0f)
+            SNew(SVerticalBox)
+
+            // 控制条属于真正的 Slate UI；网页只接收状态和数据，不能自行启停仿真。
+            + SVerticalBox::Slot()
+            .AutoHeight()
+            .Padding(2.0f, 0.0f, 2.0f, 14.0f)
             [
-                SAssignNew(ChartBrowser, SWebBrowser)
-                .InitialURL(TEXT("http://slatethemeswitcher.local/realtime-chart.html#text/html"))
-                .ContentsToLoad(TOptional<FString>(ChartDocument))
-                .ShowControls(false)
-                .ShowAddressBar(false)
-                .ShowErrorMessage(true)
-                .SupportsTransparency(false)
-                .ShowInitialThrobber(true)
-                .BackgroundColor(GetPalette().WindowBackground.ToFColorSRGB())
-                .BrowserFrameRate(30)
-                .OnLoadCompleted(FSimpleDelegate::CreateSP(this, &SThemeSwitcherPanel::HandleChartLoaded))
-                .OnLoadError(FSimpleDelegate::CreateSP(this, &SThemeSwitcherPanel::HandleChartLoadError))
+                SNew(SHorizontalBox)
+
+                + SHorizontalBox::Slot()
+                .FillWidth(1.0f)
+                .VAlign(VAlign_Center)
+                [
+                    SNew(SVerticalBox)
+                    + SVerticalBox::Slot()
+                    .AutoHeight()
+                    [
+                        SNew(STextBlock)
+                        .Text(LOCTEXT("DashboardTitle", "Slate 仿真数据仪表板"))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Bold", 15))
+                        .ColorAndOpacity(this, &SThemeSwitcherPanel::GetPrimaryTextColor)
+                    ]
+                    + SVerticalBox::Slot()
+                    .AutoHeight()
+                    .Padding(0.0f, 6.0f, 0.0f, 0.0f)
+                    [
+                        SNew(SHorizontalBox)
+                        + SHorizontalBox::Slot()
+                        .AutoWidth()
+                        .VAlign(VAlign_Center)
+                        [
+                            SNew(SBox)
+                            .WidthOverride(8.0f)
+                            .HeightOverride(8.0f)
+                            [
+                                SNew(SBorder)
+                                .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+                                .BorderBackgroundColor(this, &SThemeSwitcherPanel::GetSimulationStatusColor)
+                            ]
+                        ]
+                        + SHorizontalBox::Slot()
+                        .AutoWidth()
+                        .VAlign(VAlign_Center)
+                        .Padding(8.0f, 0.0f, 0.0f, 0.0f)
+                        [
+                            SNew(STextBlock)
+                            .Text(this, &SThemeSwitcherPanel::GetSimulationStatusText)
+                            .ColorAndOpacity(this, &SThemeSwitcherPanel::GetSecondaryTextColor)
+                        ]
+                    ]
+                ]
+
+                + SHorizontalBox::Slot()
+                .AutoWidth()
+                .VAlign(VAlign_Center)
+                .Padding(16.0f, 0.0f, 0.0f, 0.0f)
+                [
+                    SNew(SButton)
+                    .ButtonStyle(&SecondaryButtonStyle)
+                    .ToolTipText(LOCTEXT("SimulationToggleTooltip", "暂停时保留最后一帧数据；再次开始会从当前值继续仿真"))
+                    .OnClicked(this, &SThemeSwitcherPanel::HandleToggleSimulation)
+                    [
+                        SNew(STextBlock)
+                        .Text(this, &SThemeSwitcherPanel::GetSimulationButtonText)
+                        .Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+                        .ColorAndOpacity(this, &SThemeSwitcherPanel::GetPrimaryTextColor)
+                    ]
+                ]
+            ]
+
+            + SVerticalBox::Slot()
+            .AutoHeight()
+            [
+                SNew(SBox)
+                // 第四张多站点折线图需要更大的垂直空间；窄面板下网页内部会改为纵向堆叠。
+                .HeightOverride(980.0f)
+                [
+                    SAssignNew(ChartBrowser, SWebBrowser)
+                    .InitialURL(TEXT("http://slatethemeswitcher.local/realtime-chart.html#text/html"))
+                    .ContentsToLoad(TOptional<FString>(ChartDocument))
+                    .ShowControls(false)
+                    .ShowAddressBar(false)
+                    .ShowErrorMessage(true)
+                    .SupportsTransparency(false)
+                    .ShowInitialThrobber(true)
+                    .BackgroundColor(GetPalette().WindowBackground.ToFColorSRGB())
+                    .BrowserFrameRate(30)
+                    .OnLoadCompleted(FSimpleDelegate::CreateSP(this, &SThemeSwitcherPanel::HandleChartLoaded))
+                    .OnLoadError(FSimpleDelegate::CreateSP(this, &SThemeSwitcherPanel::HandleChartLoadError))
+                ]
             ]
         ];
 }
 
 void SThemeSwitcherPanel::InitializeSimulationData()
 {
-    // 名称是固定分类；数值用随机游走变化，既有随机性又不会每帧突然跳到完全无关的位置。
+    // 名称是固定分类；三组数值分别服务于折线图、柱状图和饼图。
+    // 每组数据后续都采用有边界的随机游走，避免每 300ms 完全跳到无关位置。
     SimulationNames = {
         TEXT("站点 A"),
         TEXT("站点 B"),
         TEXT("站点 C"),
         TEXT("站点 D"),
-        TEXT("站点 E"),
-        TEXT("站点 F"),
-        TEXT("站点 G"),
-        TEXT("站点 H")
+        TEXT("站点 E")
     };
 
     SimulationRandom.Initialize(static_cast<int32>(FPlatformTime::Cycles64()));
-    SimulationValues.Reset(SimulationNames.Num());
+    SimulationLoadValues.Reset(SimulationNames.Num());
+    SimulationThroughputValues.Reset(SimulationNames.Num());
+    SimulationDistributionValues.Reset(SimulationNames.Num());
+    SimulationLoadHistory.Reset(SimulationNames.Num());
+    SimulationLoadHistory.SetNum(SimulationNames.Num());
+    SimulationHistoryTimestamps.Reset(SimulationHistoryCapacity);
+
+    // 先建立一段等间隔的时间轴，让页面首次打开时就能看到完整的动态窗口。
+    // 后续每次 Tick 只追加 300ms；暂停期间不推进时间，恢复时不会产生突兀的大空档。
+    const FDateTime InitialHistoryEnd = FDateTime::Now();
+    for (int32 HistoryIndex = 0; HistoryIndex < SimulationHistoryCapacity; ++HistoryIndex)
+    {
+        const int32 MillisecondsBeforeEnd =
+            (SimulationHistoryCapacity - 1 - HistoryIndex)
+            * FMath::RoundToInt(SimulationIntervalSeconds * 1000.0f);
+        SimulationHistoryTimestamps.Add(
+            InitialHistoryEnd - FTimespan::FromMilliseconds(MillisecondsBeforeEnd));
+    }
+
     for (int32 Index = 0; Index < SimulationNames.Num(); ++Index)
     {
-        SimulationValues.Add(SimulationRandom.FRandRange(30.0f, 72.0f));
+        // 先生成一段初始历史，让多站点折线图首次打开时就有完整曲线，而不是只有一个点。
+        float HistoryValue = SimulationRandom.FRandRange(30.0f, 72.0f);
+        TArray<float>& StationHistory = SimulationLoadHistory[Index];
+        StationHistory.Reserve(SimulationHistoryCapacity);
+        for (int32 HistoryIndex = 0; HistoryIndex < SimulationHistoryCapacity; ++HistoryIndex)
+        {
+            HistoryValue = RoundToTwoDecimals(FMath::Clamp(
+                HistoryValue + SimulationRandom.FRandRange(-4.0f, 4.0f),
+                5.0f,
+                95.0f));
+            StationHistory.Add(HistoryValue);
+        }
+
+        SimulationLoadValues.Add(StationHistory.Last());
+        SimulationThroughputValues.Add(RoundToTwoDecimals(SimulationRandom.FRandRange(55.0f, 165.0f)));
+        SimulationDistributionValues.Add(RoundToTwoDecimals(SimulationRandom.FRandRange(12.0f, 48.0f)));
     }
+
+    SimulationSampleIndex = 0;
+    bSimulationRunning = true;
 }
 
 EActiveTimerReturnType SThemeSwitcherPanel::HandleSimulationTick(double InCurrentTime, float InDeltaTime)
 {
-    for (float& Value : SimulationValues)
+    // ActiveTimer 始终保留，停止时只跳过数值更新。这样无需反复注册/注销定时器，
+    // 也能保证最后一帧数据一直保存在 C++ 数组和 ECharts 页面中。
+    if (!bSimulationRunning)
     {
-        const float Delta = SimulationRandom.FRandRange(-6.0f, 6.0f);
-        Value = FMath::Clamp(Value + Delta, 5.0f, 95.0f);
+        return EActiveTimerReturnType::Continue;
     }
 
+    for (int32 Index = 0; Index < SimulationNames.Num(); ++Index)
+    {
+        const float LoadDelta = SimulationRandom.FRandRange(-5.0f, 5.0f);
+        SimulationLoadValues[Index] = RoundToTwoDecimals(FMath::Clamp(
+            SimulationLoadValues[Index] + LoadDelta,
+            5.0f,
+            95.0f));
+
+        // 处理量会受到当前负载的轻微影响，同时叠加随机扰动，让两张图有关联但不完全相同。
+        const float ThroughputDelta = SimulationRandom.FRandRange(-9.0f, 9.0f)
+            + (SimulationLoadValues[Index] - 50.0f) * 0.04f;
+        SimulationThroughputValues[Index] = RoundToTwoDecimals(FMath::Clamp(
+            SimulationThroughputValues[Index] + ThroughputDelta,
+            20.0f,
+            220.0f));
+
+        const float DistributionDelta = SimulationRandom.FRandRange(-3.0f, 3.0f);
+        SimulationDistributionValues[Index] = RoundToTwoDecimals(FMath::Clamp(
+            SimulationDistributionValues[Index] + DistributionDelta,
+            5.0f,
+            80.0f));
+
+        // 每个站点只保留固定数量的最近采样，既形成连续曲线，又不会无限增长。
+        TArray<float>& StationHistory = SimulationLoadHistory[Index];
+        StationHistory.Add(SimulationLoadValues[Index]);
+        if (StationHistory.Num() > SimulationHistoryCapacity)
+        {
+            StationHistory.RemoveAt(
+                0,
+                StationHistory.Num() - SimulationHistoryCapacity,
+                EAllowShrinking::No);
+        }
+    }
+
+    // 所有站点共用同一时间轴。只在完成本轮所有数值更新后追加一个时间点，
+    // 这样每条站点曲线的第 N 个值都会严格对应同一个采样时刻。
+    const FDateTime NextSampleTime = SimulationHistoryTimestamps.IsEmpty()
+        ? FDateTime::Now()
+        : SimulationHistoryTimestamps.Last()
+            + FTimespan::FromMilliseconds(SimulationIntervalSeconds * 1000.0f);
+    SimulationHistoryTimestamps.Add(NextSampleTime);
+    if (SimulationHistoryTimestamps.Num() > SimulationHistoryCapacity)
+    {
+        SimulationHistoryTimestamps.RemoveAt(
+            0,
+            SimulationHistoryTimestamps.Num() - SimulationHistoryCapacity,
+            EAllowShrinking::No);
+    }
+
+    ++SimulationSampleIndex;
     PushSimulationData();
     return EActiveTimerReturnType::Continue;
 }
@@ -471,21 +669,6 @@ void SThemeSwitcherPanel::PushSimulationData()
         NameJsonValues.Add(MakeShared<FJsonValueString>(Name));
     }
 
-    TArray<TSharedPtr<FJsonValue>> NumberJsonValues;
-    NumberJsonValues.Reserve(SimulationValues.Num());
-    for (const float Value : SimulationValues)
-    {
-        NumberJsonValues.Add(MakeShared<FJsonValueNumber>(Value));
-    }
-
-    FString NamesJson;
-    const TSharedRef<TJsonWriter<>> NamesWriter = TJsonWriterFactory<>::Create(&NamesJson);
-    FJsonSerializer::Serialize(NameJsonValues, NamesWriter);
-
-    FString NumbersJson;
-    const TSharedRef<TJsonWriter<>> NumbersWriter = TJsonWriterFactory<>::Create(&NumbersJson);
-    FJsonSerializer::Serialize(NumberJsonValues, NumbersWriter);
-
     const FSlateThemePalette& Palette = GetPalette();
     const TSharedRef<FJsonObject> PaletteObject = MakeShared<FJsonObject>();
     PaletteObject->SetStringField(TEXT("background"), ColorToCss(Palette.WindowBackground));
@@ -493,17 +676,76 @@ void SThemeSwitcherPanel::PushSimulationData()
     PaletteObject->SetStringField(TEXT("primaryText"), ColorToCss(Palette.PrimaryText));
     PaletteObject->SetStringField(TEXT("secondaryText"), ColorToCss(Palette.SecondaryText));
     PaletteObject->SetStringField(TEXT("accent"), ColorToCss(Palette.Accent));
+    PaletteObject->SetStringField(TEXT("success"), ColorToCss(Palette.Success));
     PaletteObject->SetStringField(TEXT("divider"), ColorToCss(Palette.Divider));
 
-    FString PaletteJson;
-    const TSharedRef<TJsonWriter<>> PaletteWriter = TJsonWriterFactory<>::Create(&PaletteJson);
-    FJsonSerializer::Serialize(PaletteObject, PaletteWriter);
+    // 汇总值同样在 Slate/C++ 侧计算，网页没有任何业务数据生成逻辑。
+    float TotalLoad = 0.0f;
+    float PeakLoad = 0.0f;
+    float TotalThroughput = 0.0f;
+    float TotalDistribution = 0.0f;
+    for (int32 Index = 0; Index < SimulationNames.Num(); ++Index)
+    {
+        TotalLoad += SimulationLoadValues[Index];
+        PeakLoad = FMath::Max(PeakLoad, SimulationLoadValues[Index]);
+        TotalThroughput += SimulationThroughputValues[Index];
+        TotalDistribution += SimulationDistributionValues[Index];
+    }
+
+    const float AverageLoad = SimulationLoadValues.IsEmpty()
+        ? 0.0f
+        : TotalLoad / static_cast<float>(SimulationLoadValues.Num());
+
+    const TSharedRef<FJsonObject> SummaryObject = MakeShared<FJsonObject>();
+    SummaryObject->SetNumberField(TEXT("averageLoad"), RoundToTwoDecimals(AverageLoad));
+    SummaryObject->SetNumberField(TEXT("peakLoad"), RoundToTwoDecimals(PeakLoad));
+    SummaryObject->SetNumberField(TEXT("totalThroughput"), RoundToTwoDecimals(TotalThroughput));
+    SummaryObject->SetNumberField(TEXT("totalDistribution"), RoundToTwoDecimals(TotalDistribution));
+
+    // 动态多折线图使用真实 time 轴。网页只把时间戳和值组合成 ECharts 数据点，
+    // 不创建定时器，也不自行推进时间，从而与 Slate 的开始/停止状态完全同步。
+    TArray<TSharedPtr<FJsonValue>> HistoryTimestampJsonValues;
+    HistoryTimestampJsonValues.Reserve(SimulationHistoryTimestamps.Num());
+    for (const FDateTime& Timestamp : SimulationHistoryTimestamps)
+    {
+        HistoryTimestampJsonValues.Add(
+            MakeShared<FJsonValueNumber>(DateTimeToUnixMilliseconds(Timestamp)));
+    }
+
+    TArray<TSharedPtr<FJsonValue>> HistorySeriesJsonValues;
+    HistorySeriesJsonValues.Reserve(SimulationNames.Num());
+    for (int32 StationIndex = 0; StationIndex < SimulationNames.Num(); ++StationIndex)
+    {
+        const TArray<float>& StationHistory = SimulationLoadHistory[StationIndex];
+
+        const TSharedRef<FJsonObject> SeriesObject = MakeShared<FJsonObject>();
+        SeriesObject->SetStringField(TEXT("name"), SimulationNames[StationIndex]);
+        SeriesObject->SetArrayField(TEXT("values"), MakeNumberJsonArray(StationHistory));
+        HistorySeriesJsonValues.Add(MakeShared<FJsonValueObject>(SeriesObject));
+    }
+
+    // 使用单个 JSON 快照作为 C++ 与网页的协议，未来增加更多图表时只需扩展字段。
+    const TSharedRef<FJsonObject> PayloadObject = MakeShared<FJsonObject>();
+    PayloadObject->SetBoolField(TEXT("running"), bSimulationRunning);
+    PayloadObject->SetNumberField(TEXT("intervalMs"), SimulationIntervalSeconds * 1000.0f);
+    PayloadObject->SetNumberField(TEXT("sampleIndex"), SimulationSampleIndex);
+    PayloadObject->SetArrayField(TEXT("names"), NameJsonValues);
+    PayloadObject->SetArrayField(TEXT("loadValues"), MakeNumberJsonArray(SimulationLoadValues));
+    PayloadObject->SetArrayField(TEXT("throughputValues"), MakeNumberJsonArray(SimulationThroughputValues));
+    PayloadObject->SetArrayField(TEXT("distributionValues"), MakeNumberJsonArray(SimulationDistributionValues));
+    PayloadObject->SetNumberField(TEXT("historyCapacity"), SimulationHistoryCapacity);
+    PayloadObject->SetArrayField(TEXT("historyTimestamps"), HistoryTimestampJsonValues);
+    PayloadObject->SetArrayField(TEXT("stationHistorySeries"), HistorySeriesJsonValues);
+    PayloadObject->SetObjectField(TEXT("summary"), SummaryObject);
+    PayloadObject->SetObjectField(TEXT("palette"), PaletteObject);
+
+    FString PayloadJson;
+    const TSharedRef<TJsonWriter<>> PayloadWriter = TJsonWriterFactory<>::Create(&PayloadJson);
+    FJsonSerializer::Serialize(PayloadObject, PayloadWriter);
 
     const FString Script = FString::Printf(
-        TEXT("window.updateSimulationData && window.updateSimulationData(%s, %s, %s);"),
-        *NamesJson,
-        *NumbersJson,
-        *PaletteJson);
+        TEXT("window.updateSimulationDashboard && window.updateSimulationDashboard(%s);"),
+        *PayloadJson);
     ChartBrowser->ExecuteJavascript(Script);
 }
 
@@ -575,6 +817,24 @@ FReply SThemeSwitcherPanel::HandleToggleTheme()
     return FReply::Handled();
 }
 
+FReply SThemeSwitcherPanel::HandleToggleSimulation()
+{
+    bSimulationRunning = !bSimulationRunning;
+
+    // 状态切换本身也立即推送一次，使网页状态标签与 Slate 按钮在同一帧更新。
+    // 停止时不会修改任何数组，因此四个图表都会保留最后一次采样结果。
+    PushSimulationData();
+    Invalidate(EInvalidateWidgetReason::Paint);
+
+    UE_LOG(
+        LogSlateThemeChart,
+        Display,
+        TEXT("Slate 仿真已%s，当前采样序号：%d。"),
+        bSimulationRunning ? TEXT("开始") : TEXT("停止"),
+        SimulationSampleIndex);
+    return FReply::Handled();
+}
+
 void SThemeSwitcherPanel::HandleThemeSelected(TSharedPtr<FName> ThemeId, ESelectInfo::Type SelectInfo)
 {
     // SelectInfo 可用于区分鼠标、键盘或代码选择；当前功能对所有来源采用相同行为。
@@ -614,6 +874,20 @@ FText SThemeSwitcherPanel::GetCurrentThemeDescription() const
     return FText::GetEmpty();
 }
 
+FText SThemeSwitcherPanel::GetSimulationButtonText() const
+{
+    return bSimulationRunning
+        ? LOCTEXT("StopSimulationButton", "停止仿真  ■")
+        : LOCTEXT("StartSimulationButton", "开始仿真  ▶");
+}
+
+FText SThemeSwitcherPanel::GetSimulationStatusText() const
+{
+    return bSimulationRunning
+        ? LOCTEXT("SimulationRunningStatus", "仿真运行中 · 每 300 ms 更新")
+        : LOCTEXT("SimulationStoppedStatus", "仿真已停止 · 当前数据已保留");
+}
+
 // 这些小型 Getter 作为 Slate Attribute 绑定使用；控件重绘时会读取当前色板，而不是缓存旧颜色。
 FSlateColor SThemeSwitcherPanel::GetWindowColor() const { return GetPalette().WindowBackground; }
 FSlateColor SThemeSwitcherPanel::GetPanelColor() const { return GetPalette().PanelBackground; }
@@ -624,6 +898,11 @@ FSlateColor SThemeSwitcherPanel::GetAccentColor() const { return GetPalette().Ac
 FSlateColor SThemeSwitcherPanel::GetAccentTextColor() const { return GetPalette().AccentText; }
 FSlateColor SThemeSwitcherPanel::GetDividerColor() const { return GetPalette().Divider; }
 FSlateColor SThemeSwitcherPanel::GetSuccessColor() const { return GetPalette().Success; }
+
+FSlateColor SThemeSwitcherPanel::GetSimulationStatusColor() const
+{
+    return bSimulationRunning ? GetPalette().Success : GetPalette().SecondaryText;
+}
 
 FSlateColor SThemeSwitcherPanel::GetAccentSubtleColor() const
 {

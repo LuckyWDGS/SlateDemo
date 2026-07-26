@@ -3,11 +3,24 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>实时仿真折线图</title>
+    <title>Slate 仿真数据仪表板</title>
     <style>
+        :root {
+            --background: #ffffff;
+            --surface: #eef2f8;
+            --primary-text: #111827;
+            --secondary-text: #667085;
+            --accent: #2563eb;
+            --success: #16a34a;
+            --divider: #d4dae5;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
         html,
-        body,
-        #chart {
+        body {
             width: 100%;
             height: 100%;
             margin: 0;
@@ -15,30 +28,246 @@
         }
 
         body {
-            background: #ffffff;
+            padding: 12px;
+            background: var(--background);
+            color: var(--primary-text);
             font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+        }
+
+        #dashboard {
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            gap: 12px;
+            width: 100%;
+            height: 100%;
+        }
+
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .summary-card,
+        .chart-card {
+            border: 1px solid var(--divider);
+            border-radius: 8px;
+            background: var(--surface);
+        }
+
+        .summary-card {
+            min-width: 0;
+            padding: 11px 14px;
+        }
+
+        .summary-label {
+            overflow: hidden;
+            color: var(--secondary-text);
+            font-size: 11px;
+            line-height: 16px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .summary-value {
+            margin-top: 3px;
+            overflow: hidden;
+            color: var(--primary-text);
+            font-size: 20px;
+            font-weight: 650;
+            line-height: 26px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .summary-unit {
+            margin-left: 4px;
+            color: var(--secondary-text);
+            font-size: 10px;
+            font-weight: 400;
+        }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.75fr);
+            grid-template-rows: minmax(0, 0.9fr) minmax(0, 1.25fr) minmax(0, 0.9fr);
+            gap: 12px;
+            min-height: 0;
+        }
+
+        .chart-card {
+            position: relative;
+            min-width: 0;
+            min-height: 0;
+            overflow: hidden;
+        }
+
+        .line-card,
+        .multi-line-card {
+            grid-column: 1 / -1;
+        }
+
+        .chart {
+            width: 100%;
+            height: 100%;
+        }
+
+        .simulation-badge {
+            position: absolute;
+            z-index: 2;
+            top: 14px;
+            right: 16px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 9px;
+            border: 1px solid var(--divider);
+            border-radius: 999px;
+            background: var(--background);
+            color: var(--secondary-text);
+            font-size: 10px;
+            pointer-events: none;
+        }
+
+        .simulation-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--success);
+        }
+
+        .simulation-badge.stopped .simulation-dot {
+            background: var(--secondary-text);
+        }
+
+        @media (max-width: 760px) {
+            .summary-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+            .charts-grid {
+                grid-template-columns: 1fr;
+                grid-template-rows: repeat(4, minmax(260px, 1fr));
+                overflow-y: auto;
+            }
+
+            .line-card,
+            .multi-line-card {
+                grid-column: auto;
+            }
         }
     </style>
 </head>
 <body>
-    <div id="chart" role="img" aria-label="实时仿真数据折线图"></div>
+    <main id="dashboard">
+        <section class="summary-grid" aria-label="仿真数据摘要">
+            <article class="summary-card">
+                <div class="summary-label">平均负载</div>
+                <div class="summary-value"><span id="average-load">0.00</span><span class="summary-unit">%</span></div>
+            </article>
+            <article class="summary-card">
+                <div class="summary-label">峰值负载</div>
+                <div class="summary-value"><span id="peak-load">0.00</span><span class="summary-unit">%</span></div>
+            </article>
+            <article class="summary-card">
+                <div class="summary-label">总处理量</div>
+                <div class="summary-value"><span id="total-throughput">0.00</span><span class="summary-unit">单位</span></div>
+            </article>
+            <article class="summary-card">
+                <div class="summary-label">采样次数</div>
+                <div class="summary-value"><span id="sample-index">0.00</span><span class="summary-unit">次</span></div>
+            </article>
+        </section>
+
+        <section class="charts-grid" aria-label="ECharts 多图表区域">
+            <article class="chart-card line-card">
+                <div id="simulation-badge" class="simulation-badge">
+                    <span class="simulation-dot"></span>
+                    <span id="simulation-status">仿真运行中</span>
+                </div>
+                <div id="line-chart" class="chart" role="img" aria-label="各站点实时负载折线图"></div>
+            </article>
+            <article class="chart-card multi-line-card">
+                <div id="multi-line-chart" class="chart" role="img" aria-label="横轴为采样名称、纵轴为数据值的多站点折线图"></div>
+            </article>
+            <article class="chart-card">
+                <div id="bar-chart" class="chart" role="img" aria-label="各站点处理量柱状图"></div>
+            </article>
+            <article class="chart-card">
+                <div id="pie-chart" class="chart" role="img" aria-label="各站点资源分布饼图"></div>
+            </article>
+        </section>
+    </main>
+
     <script src="echarts.min.js"></script>
     <script>
-        const chart = echarts.init(document.getElementById("chart"), null, {
+        // 页面只保存 Slate/C++ 推送来的最后一份快照，不包含自主定时器或随机数生成逻辑。
+        let state = {
+            running: true,
+            intervalMs: 300,
+            sampleIndex: 0,
+            names: ["站点 A", "站点 B", "站点 C", "站点 D", "站点 E", "站点 F", "站点 G", "站点 H"],
+            loadValues: [42.00, 55.00, 48.00, 63.00, 58.00, 70.00, 51.00, 66.00],
+            throughputValues: [88.00, 112.00, 95.00, 138.00, 126.00, 154.00, 101.00, 142.00],
+            distributionValues: [18.00, 24.00, 16.00, 30.00, 22.00, 34.00, 20.00, 28.00],
+            historyCapacity: 32,
+            historyTimestamps: [],
+            stationHistorySeries: [],
+            summary: {
+                averageLoad: 56.63,
+                peakLoad: 70.00,
+                totalThroughput: 956.00,
+                totalDistribution: 192.00
+            },
+            palette: {
+                background: "#ffffff",
+                surface: "#eef2f8",
+                primaryText: "#111827",
+                secondaryText: "#667085",
+                accent: "#2563eb",
+                success: "#16a34a",
+                divider: "#d4dae5"
+            }
+        };
+
+        // 所有按站点着色的图表共用同一套高对比色，避免相同站点在不同图中颜色不一致。
+        const stationColors = [
+            "#2563eb", // 蓝：站点 A
+            "#f97316", // 橙：站点 B
+            "#16a34a", // 绿：站点 C
+            "#e11d48", // 红：站点 D
+            "#7c3aed"  // 紫：站点 E
+        ];
+
+        const lineChart = echarts.init(document.getElementById("line-chart"), null, {
+            renderer: "canvas",
+            useDirtyRect: true
+        });
+        const multiLineChart = echarts.init(document.getElementById("multi-line-chart"), null, {
+            renderer: "canvas",
+            useDirtyRect: true
+        });
+        const barChart = echarts.init(document.getElementById("bar-chart"), null, {
+            renderer: "canvas",
+            useDirtyRect: true
+        });
+        const pieChart = echarts.init(document.getElementById("pie-chart"), null, {
             renderer: "canvas",
             useDirtyRect: true
         });
 
-        let names = ["节点 A", "节点 B", "节点 C", "节点 D", "节点 E", "节点 F"];
-        let values = [42, 55, 48, 63, 58, 70];
-        let palette = {
-            background: "#ffffff",
-            surface: "#eef2f8",
-            primaryText: "#111827",
-            secondaryText: "#667085",
-            accent: "#2563eb",
-            divider: "#d4dae5"
-        };
+        function formatNumber(value) {
+            const number = Number(value);
+            return Number.isFinite(number) ? number.toFixed(2) : "0.00";
+        }
+
+        /** 把 C++ 提供的 Unix 毫秒时间戳格式化为本地采样时间。 */
+        function formatSampleTime(value) {
+            const time = new Date(value);
+            const pad = number => String(number).padStart(2, "0");
+            const milliseconds = String(time.getMilliseconds()).padStart(3, "0");
+            return `${pad(time.getHours())}:${pad(time.getMinutes())}:${pad(time.getSeconds())}.${milliseconds}`;
+        }
 
         function hexToRgba(hex, alpha) {
             const value = hex.replace("#", "").slice(0, 6);
@@ -48,157 +277,468 @@
             return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
         }
 
-        function render() {
-            document.body.style.background = palette.background;
+        function applyPalette() {
+            const root = document.documentElement;
+            root.style.setProperty("--background", state.palette.background);
+            root.style.setProperty("--surface", state.palette.surface);
+            root.style.setProperty("--primary-text", state.palette.primaryText);
+            root.style.setProperty("--secondary-text", state.palette.secondaryText);
+            root.style.setProperty("--accent", state.palette.accent);
+            root.style.setProperty("--success", state.palette.success);
+            root.style.setProperty("--divider", state.palette.divider);
+        }
 
-            chart.setOption({
-                backgroundColor: palette.background,
-                animation: true,
+        function makeAxisStyle() {
+            return {
+                nameTextStyle: {
+                    color: state.palette.secondaryText,
+                    fontSize: 11
+                },
+                axisLabel: {
+                    color: state.palette.secondaryText,
+                    fontSize: 10
+                },
+                axisLine: {
+                    lineStyle: {
+                        color: state.palette.divider
+                    }
+                },
+                axisTick: {
+                    alignWithLabel: true,
+                    lineStyle: {
+                        color: state.palette.divider
+                    }
+                }
+            };
+        }
+
+        function makeValueAxis(name, maximum) {
+            const axis = makeAxisStyle();
+            return Object.assign(axis, {
+                type: "value",
+                name,
+                min: 0,
+                max: maximum,
+                splitNumber: 5,
+                axisLabel: Object.assign({}, axis.axisLabel, {
+                    formatter: value => formatNumber(value)
+                }),
+                splitLine: {
+                    lineStyle: {
+                        color: state.palette.divider,
+                        type: "dashed",
+                        opacity: 0.72
+                    }
+                }
+            });
+        }
+
+        function makeTitle(text, subtext) {
+            return {
+                text,
+                subtext,
+                left: 16,
+                top: 12,
+                textStyle: {
+                    color: state.palette.primaryText,
+                    fontSize: 14,
+                    fontWeight: 600
+                },
+                subtextStyle: {
+                    color: state.palette.secondaryText,
+                    fontSize: 10
+                }
+            };
+        }
+
+        function makeAxisTooltip() {
+            return {
+                trigger: "axis",
+                backgroundColor: state.palette.surface,
+                borderColor: state.palette.divider,
+                borderWidth: 1,
+                textStyle: {
+                    color: state.palette.primaryText
+                },
+                valueFormatter: value => formatNumber(value)
+            };
+        }
+
+        function renderSummary() {
+            document.getElementById("average-load").textContent = formatNumber(state.summary.averageLoad);
+            document.getElementById("peak-load").textContent = formatNumber(state.summary.peakLoad);
+            document.getElementById("total-throughput").textContent = formatNumber(state.summary.totalThroughput);
+            document.getElementById("sample-index").textContent = formatNumber(state.sampleIndex);
+
+            const badge = document.getElementById("simulation-badge");
+            badge.classList.toggle("stopped", !state.running);
+            document.getElementById("simulation-status").textContent = state.running
+                ? `仿真运行中 · ${formatNumber(state.intervalMs)} ms`
+                : "仿真已停止 · 保留最后数据";
+        }
+
+        function renderLineChart() {
+            const categoryAxis = Object.assign(makeAxisStyle(), {
+                type: "category",
+                name: "名称",
+                boundaryGap: false,
+                data: state.names
+            });
+
+            lineChart.setOption({
+                backgroundColor: state.palette.surface,
                 animationDurationUpdate: 240,
                 animationEasingUpdate: "cubicOut",
                 textStyle: {
-                    color: palette.primaryText,
+                    color: state.palette.primaryText,
                     fontFamily: "Microsoft YaHei UI, Segoe UI, sans-serif"
                 },
-                title: {
-                    text: "实时仿真折线图",
-                    subtext: "每 300 ms 更新一次随机变化数据",
-                    left: 20,
-                    top: 14,
-                    textStyle: {
-                        color: palette.primaryText,
-                        fontSize: 16,
-                        fontWeight: 600
-                    },
-                    subtextStyle: {
-                        color: palette.secondaryText,
-                        fontSize: 11
-                    }
-                },
+                title: makeTitle("实时负载折线图", "X 轴：站点名称 · Y 轴：负载数值（%）"),
                 grid: {
-                    left: 58,
+                    left: 62,
                     right: 28,
-                    top: 82,
-                    bottom: 58,
-                    containLabel: false
+                    top: 74,
+                    bottom: 42
                 },
-                tooltip: {
-                    trigger: "axis",
-                    backgroundColor: palette.surface,
-                    borderColor: palette.divider,
-                    borderWidth: 1,
-                    textStyle: {
-                        color: palette.primaryText
-                    },
-                    axisPointer: {
-                        type: "line",
-                        lineStyle: {
-                            color: palette.secondaryText,
-                            type: "dashed"
-                        }
-                    }
-                },
-                xAxis: {
-                    type: "category",
-                    name: "名称",
-                    nameLocation: "middle",
-                    nameGap: 34,
-                    boundaryGap: false,
-                    data: names,
-                    nameTextStyle: {
-                        color: palette.secondaryText,
-                        fontSize: 12
-                    },
-                    axisLabel: {
-                        color: palette.secondaryText,
-                        fontSize: 11
-                    },
-                    axisLine: {
-                        lineStyle: {
-                            color: palette.divider
-                        }
-                    },
-                    axisTick: {
-                        alignWithLabel: true,
-                        lineStyle: {
-                            color: palette.divider
-                        }
-                    }
-                },
-                yAxis: {
-                    type: "value",
-                    name: "数值",
-                    nameGap: 18,
-                    min: 0,
-                    max: 100,
-                    splitNumber: 5,
-                    nameTextStyle: {
-                        color: palette.secondaryText,
-                        fontSize: 12
-                    },
-                    axisLabel: {
-                        color: palette.secondaryText,
-                        fontSize: 11
-                    },
-                    axisLine: {
-                        show: true,
-                        lineStyle: {
-                            color: palette.divider
-                        }
-                    },
-                    splitLine: {
-                        lineStyle: {
-                            color: palette.divider,
-                            type: "dashed",
-                            opacity: 0.7
-                        }
-                    }
-                },
+                tooltip: makeAxisTooltip(),
+                xAxis: categoryAxis,
+                yAxis: makeValueAxis("负载（%）", 100),
                 series: [{
-                    name: "仿真数值",
+                    name: "实时负载",
                     type: "line",
                     smooth: 0.28,
                     showSymbol: true,
                     symbol: "circle",
                     symbolSize: 7,
-                    data: values,
+                    data: state.loadValues,
                     lineStyle: {
-                        color: palette.accent,
+                        color: state.palette.accent,
                         width: 3
                     },
                     itemStyle: {
-                        color: palette.accent,
-                        borderColor: palette.background,
+                        color: state.palette.accent,
+                        borderColor: state.palette.surface,
                         borderWidth: 2
                     },
                     areaStyle: {
                         color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                            { offset: 0, color: hexToRgba(palette.accent, 0.32) },
-                            { offset: 1, color: hexToRgba(palette.accent, 0.02) }
+                            { offset: 0, color: hexToRgba(state.palette.accent, 0.34) },
+                            { offset: 1, color: hexToRgba(state.palette.accent, 0.02) }
                         ])
                     }
                 }]
-            }, {
-                notMerge: false,
-                lazyUpdate: false
-            });
+            }, true);
         }
 
-        window.updateSimulationData = function (nextNames, nextValues, nextPalette) {
-            if (Array.isArray(nextNames)) {
-                names = nextNames;
+        function renderMultiLineChart() {
+            // 每个 stationSeries 都是 C++ 推送的一条完整历史曲线；网页只负责套用 ECharts 样式。
+            const lineSeries = state.stationHistorySeries.map((stationSeries, seriesIndex) => {
+                const values = Array.isArray(stationSeries.values) ? stationSeries.values : [];
+                const color = stationColors[seriesIndex % stationColors.length];
+                return {
+                    name: stationSeries.name || state.names[seriesIndex] || `站点 ${seriesIndex + 1}`,
+                    type: "line",
+                    smooth: 0.2,
+                    // 参考 dynamic-data2：取消每个采样点的圆点，只显示连续折线。
+                    showSymbol: false,
+                    symbol: "none",
+                    data: values.map((value, valueIndex) => [
+                        state.historyTimestamps[valueIndex],
+                        value
+                    ]),
+                    lineStyle: {
+                        color,
+                        width: 2.2,
+                        opacity: 0.88
+                    },
+                    itemStyle: {
+                        color,
+                        borderColor: state.palette.surface,
+                        borderWidth: 2
+                    },
+                    emphasis: {
+                        focus: "series",
+                        lineStyle: {
+                            width: 3.5
+                        }
+                    }
+                };
+            });
+
+            multiLineChart.setOption({
+                backgroundColor: state.palette.surface,
+                animationDurationUpdate: 240,
+                animationEasingUpdate: "linear",
+                color: stationColors,
+                textStyle: {
+                    color: state.palette.primaryText,
+                    fontFamily: "Microsoft YaHei UI, Segoe UI, sans-serif"
+                },
+                title: makeTitle(
+                    "五站点动态折线图",
+                    `X 轴：采样时间 · Y 轴：仿真数据值 · 每站 ${state.historyCapacity} 个历史点`
+                ),
+                legend: {
+                    type: "scroll",
+                    left: 16,
+                    right: 18,
+                    top: 52,
+                    itemWidth: 16,
+                    itemHeight: 8,
+                    textStyle: {
+                        color: state.palette.secondaryText,
+                        fontSize: 9
+                    }
+                },
+                grid: {
+                    left: 64,
+                    right: 28,
+                    top: 92,
+                    bottom: 62
+                },
+                tooltip: {
+                    trigger: "axis",
+                    axisPointer: {
+                        animation: false
+                    },
+                    backgroundColor: state.palette.surface,
+                    borderColor: state.palette.divider,
+                    borderWidth: 1,
+                    textStyle: {
+                        color: state.palette.primaryText
+                    },
+                    formatter: params => {
+                        const seriesItems = Array.isArray(params) ? params : [params];
+                        if (seriesItems.length === 0) {
+                            return "";
+                        }
+
+                        const firstValue = Array.isArray(seriesItems[0].value)
+                            ? seriesItems[0].value
+                            : [];
+                        const rows = seriesItems.map(item => {
+                            const pointValue = Array.isArray(item.value) ? item.value[1] : item.value;
+                            return `${item.marker}${item.seriesName}：${formatNumber(pointValue)}`;
+                        });
+                        return [formatSampleTime(firstValue[0]), ...rows].join("<br>");
+                    }
+                },
+                xAxis: {
+                    type: "time",
+                    name: "采样时间",
+                    boundaryGap: [0, "4%"],
+                    nameLocation: "middle",
+                    nameGap: 38,
+                    nameTextStyle: {
+                        color: state.palette.secondaryText,
+                        fontSize: 11
+                    },
+                    axisLabel: {
+                        color: state.palette.secondaryText,
+                        fontSize: 10,
+                        hideOverlap: true,
+                        formatter: value => formatSampleTime(value)
+                    },
+                    axisLine: {
+                        lineStyle: {
+                            color: state.palette.divider
+                        }
+                    },
+                    splitLine: {
+                        show: false
+                    }
+                },
+                yAxis: {
+                    type: "value",
+                    name: "数据值",
+                    min: 0,
+                    max: 100,
+                    splitNumber: 5,
+                    nameTextStyle: {
+                        color: state.palette.secondaryText,
+                        fontSize: 11
+                    },
+                    axisLabel: {
+                        color: state.palette.secondaryText,
+                        fontSize: 10,
+                        formatter: value => formatNumber(value)
+                    },
+                    axisLine: {
+                        lineStyle: {
+                            color: state.palette.divider
+                        }
+                    },
+                    splitLine: {
+                        show: true,
+                        lineStyle: {
+                            color: state.palette.divider,
+                            type: "dashed",
+                            opacity: 0.7
+                        }
+                    }
+                },
+                series: lineSeries
+            }, true);
+        }
+
+        function renderBarChart() {
+            const categoryAxis = Object.assign(makeAxisStyle(), {
+                type: "category",
+                name: "名称",
+                data: state.names,
+                axisLabel: Object.assign({}, makeAxisStyle().axisLabel, {
+                    interval: 0,
+                    rotate: state.names.length > 6 ? 24 : 0
+                })
+            });
+
+            barChart.setOption({
+                backgroundColor: state.palette.surface,
+                animationDurationUpdate: 240,
+                textStyle: {
+                    color: state.palette.primaryText,
+                    fontFamily: "Microsoft YaHei UI, Segoe UI, sans-serif"
+                },
+                title: makeTitle("处理量柱状图", "每个站点当前处理量"),
+                grid: {
+                    left: 58,
+                    right: 20,
+                    top: 72,
+                    bottom: 58
+                },
+                tooltip: makeAxisTooltip(),
+                xAxis: categoryAxis,
+                yAxis: makeValueAxis("处理量", 240),
+                series: [{
+                    name: "处理量",
+                    type: "bar",
+                    barMaxWidth: 34,
+                    data: state.throughputValues,
+                    itemStyle: {
+                        color: params => stationColors[params.dataIndex % stationColors.length],
+                        borderRadius: [4, 4, 0, 0]
+                    },
+                    label: {
+                        show: true,
+                        position: "top",
+                        color: state.palette.secondaryText,
+                        fontSize: 9,
+                        formatter: params => formatNumber(params.value)
+                    }
+                }]
+            }, true);
+        }
+
+        function renderPieChart() {
+            const pieData = state.names.map((name, index) => ({
+                name,
+                value: state.distributionValues[index] ?? 0
+            }));
+
+            pieChart.setOption({
+                backgroundColor: state.palette.surface,
+                animationDurationUpdate: 240,
+                color: stationColors,
+                textStyle: {
+                    color: state.palette.primaryText,
+                    fontFamily: "Microsoft YaHei UI, Segoe UI, sans-serif"
+                },
+                title: makeTitle("资源分布饼图", "各站点当前分布权重"),
+                tooltip: {
+                    trigger: "item",
+                    backgroundColor: state.palette.surface,
+                    borderColor: state.palette.divider,
+                    borderWidth: 1,
+                    textStyle: {
+                        color: state.palette.primaryText
+                    },
+                    formatter: params => `${params.marker}${params.name}<br>权重：${formatNumber(params.value)}<br>占比：${formatNumber(params.percent)}%`
+                },
+                legend: {
+                    type: "scroll",
+                    orient: "vertical",
+                    right: 8,
+                    top: 70,
+                    bottom: 14,
+                    textStyle: {
+                        color: state.palette.secondaryText,
+                        fontSize: 9
+                    }
+                },
+                series: [{
+                    name: "资源分布",
+                    type: "pie",
+                    radius: ["34%", "62%"],
+                    center: ["40%", "58%"],
+                    avoidLabelOverlap: true,
+                    minAngle: 3,
+                    itemStyle: {
+                        borderColor: state.palette.surface,
+                        borderWidth: 2,
+                        borderRadius: 3
+                    },
+                    label: {
+                        color: state.palette.secondaryText,
+                        fontSize: 9,
+                        formatter: params => `${params.name}\n${formatNumber(params.value)}`
+                    },
+                    labelLine: {
+                        lineStyle: {
+                            color: state.palette.divider
+                        }
+                    },
+                    data: pieData
+                }]
+            }, true);
+        }
+
+        function renderDashboard() {
+            applyPalette();
+            renderSummary();
+            renderLineChart();
+            renderMultiLineChart();
+            renderBarChart();
+            renderPieChart();
+        }
+
+        // C++ 每次发送完整快照；数组复制可以避免外部脚本意外修改 Slate 数据镜像。
+        window.updateSimulationDashboard = function (payload) {
+            if (!payload || typeof payload !== "object") {
+                return;
             }
-            if (Array.isArray(nextValues)) {
-                values = nextValues;
-            }
-            if (nextPalette) {
-                palette = Object.assign({}, palette, nextPalette);
-            }
-            render();
+
+            state = {
+                ...state,
+                ...payload,
+                names: Array.isArray(payload.names) ? payload.names.slice() : state.names,
+                loadValues: Array.isArray(payload.loadValues) ? payload.loadValues.slice() : state.loadValues,
+                throughputValues: Array.isArray(payload.throughputValues) ? payload.throughputValues.slice() : state.throughputValues,
+                distributionValues: Array.isArray(payload.distributionValues) ? payload.distributionValues.slice() : state.distributionValues,
+                historyTimestamps: Array.isArray(payload.historyTimestamps)
+                    ? payload.historyTimestamps.slice()
+                    : state.historyTimestamps,
+                stationHistorySeries: Array.isArray(payload.stationHistorySeries)
+                    ? payload.stationHistorySeries.map(stationSeries => ({
+                        ...stationSeries,
+                        values: Array.isArray(stationSeries.values)
+                            ? stationSeries.values.slice()
+                            : []
+                    }))
+                    : state.stationHistorySeries,
+                summary: Object.assign({}, state.summary, payload.summary || {}),
+                palette: Object.assign({}, state.palette, payload.palette || {})
+            };
+            renderDashboard();
         };
 
-        window.addEventListener("resize", () => chart.resize());
-        render();
+        window.addEventListener("resize", () => {
+            lineChart.resize();
+            multiLineChart.resize();
+            barChart.resize();
+            pieChart.resize();
+        });
+
+        renderDashboard();
     </script>
 </body>
 </html>

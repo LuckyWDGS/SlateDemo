@@ -44,13 +44,14 @@ private:
     TSharedRef<SWidget> BuildChartPanel();
 
     FReply HandleToggleTheme();
+    FReply HandleToggleSimulation();
     void HandleThemeSelected(TSharedPtr<FName> ThemeId, ESelectInfo::Type SelectInfo);
     EActiveTimerReturnType HandleSimulationTick(double InCurrentTime, float InDeltaTime);
 
-    /** 创建站点名称和初始数值。 */
+    /** 创建站点名称，以及折线图、柱状图和饼图所需的三组初始仿真数据。 */
     void InitializeSimulationData();
 
-    /** 把当前名称、数值和主题色板序列化后推送到 ECharts 页面。 */
+    /** 把当前仿真快照、运行状态和主题色板序列化后推送到 ECharts 页面。 */
     void PushSimulationData();
 
     /**
@@ -68,6 +69,8 @@ private:
     const struct FSlateThemePalette& GetPalette() const;
     FText GetCurrentThemeName() const;
     FText GetCurrentThemeDescription() const;
+    FText GetSimulationButtonText() const;
+    FText GetSimulationStatusText() const;
     FSlateColor GetWindowColor() const;
     FSlateColor GetPanelColor() const;
     FSlateColor GetSurfaceColor() const;
@@ -78,6 +81,7 @@ private:
     FSlateColor GetAccentSubtleColor() const;
     FSlateColor GetDividerColor() const;
     FSlateColor GetSuccessColor() const;
+    FSlateColor GetSimulationStatusColor() const;
 
     /** SComboBox 在生命周期内会持有 OptionsSource 地址，因此数组必须是成员变量。 */
     TArray<TSharedPtr<FName>> ThemeOptions;
@@ -92,9 +96,29 @@ private:
     FDelegateHandle ThemeChangedHandle;
     FDelegateHandle ThemeRegistryChangedHandle;
 
-    /** 300ms 仿真定时器及其数据。 */
+    /**
+     * 300ms 仿真定时器及其数据。
+     *
+     * 三组当前值与每站点历史窗口都由 C++ 更新，网页端只负责显示，
+     * 避免出现 Slate 状态与图表状态不一致。
+     * 停止仿真时只把 bSimulationRunning 设为 false，不清空数组，因此图表会保留最后一帧。
+     */
     TSharedPtr<FActiveTimerHandle> SimulationTimerHandle;
     TArray<FString> SimulationNames;
-    TArray<float> SimulationValues;
+    TArray<float> SimulationLoadValues;
+    TArray<float> SimulationThroughputValues;
+    TArray<float> SimulationDistributionValues;
+
+    /** 每个站点最近一段负载历史；外层下标与 SimulationNames 一一对应。 */
+    TArray<TArray<float>> SimulationLoadHistory;
+
+    /**
+     * 多站点折线图共用的采样时间轴。
+     * 时间只在仿真运行时向前推进，因此暂停后横轴和所有曲线都会一起冻结。
+     */
+    TArray<FDateTime> SimulationHistoryTimestamps;
+
     FRandomStream SimulationRandom;
+    int32 SimulationSampleIndex = 0;
+    bool bSimulationRunning = true;
 };
