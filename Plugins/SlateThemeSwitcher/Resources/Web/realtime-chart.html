@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>实时仿真折线图</title>
+    <style>
+        html,
+        body,
+        #chart {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        body {
+            background: #ffffff;
+            font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+        }
+    </style>
+</head>
+<body>
+    <div id="chart" role="img" aria-label="实时仿真数据折线图"></div>
+    <script src="echarts.min.js"></script>
+    <script>
+        const chart = echarts.init(document.getElementById("chart"), null, {
+            renderer: "canvas",
+            useDirtyRect: true
+        });
+
+        let names = ["节点 A", "节点 B", "节点 C", "节点 D", "节点 E", "节点 F"];
+        let values = [42, 55, 48, 63, 58, 70];
+        let palette = {
+            background: "#ffffff",
+            surface: "#eef2f8",
+            primaryText: "#111827",
+            secondaryText: "#667085",
+            accent: "#2563eb",
+            divider: "#d4dae5"
+        };
+
+        function hexToRgba(hex, alpha) {
+            const value = hex.replace("#", "").slice(0, 6);
+            const red = parseInt(value.slice(0, 2), 16);
+            const green = parseInt(value.slice(2, 4), 16);
+            const blue = parseInt(value.slice(4, 6), 16);
+            return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+        }
+
+        function render() {
+            document.body.style.background = palette.background;
+
+            chart.setOption({
+                backgroundColor: palette.background,
+                animation: true,
+                animationDurationUpdate: 240,
+                animationEasingUpdate: "cubicOut",
+                textStyle: {
+                    color: palette.primaryText,
+                    fontFamily: "Microsoft YaHei UI, Segoe UI, sans-serif"
+                },
+                title: {
+                    text: "实时仿真折线图",
+                    subtext: "每 300 ms 更新一次随机变化数据",
+                    left: 20,
+                    top: 14,
+                    textStyle: {
+                        color: palette.primaryText,
+                        fontSize: 16,
+                        fontWeight: 600
+                    },
+                    subtextStyle: {
+                        color: palette.secondaryText,
+                        fontSize: 11
+                    }
+                },
+                grid: {
+                    left: 58,
+                    right: 28,
+                    top: 82,
+                    bottom: 58,
+                    containLabel: false
+                },
+                tooltip: {
+                    trigger: "axis",
+                    backgroundColor: palette.surface,
+                    borderColor: palette.divider,
+                    borderWidth: 1,
+                    textStyle: {
+                        color: palette.primaryText
+                    },
+                    axisPointer: {
+                        type: "line",
+                        lineStyle: {
+                            color: palette.secondaryText,
+                            type: "dashed"
+                        }
+                    }
+                },
+                xAxis: {
+                    type: "category",
+                    name: "名称",
+                    nameLocation: "middle",
+                    nameGap: 34,
+                    boundaryGap: false,
+                    data: names,
+                    nameTextStyle: {
+                        color: palette.secondaryText,
+                        fontSize: 12
+                    },
+                    axisLabel: {
+                        color: palette.secondaryText,
+                        fontSize: 11
+                    },
+                    axisLine: {
+                        lineStyle: {
+                            color: palette.divider
+                        }
+                    },
+                    axisTick: {
+                        alignWithLabel: true,
+                        lineStyle: {
+                            color: palette.divider
+                        }
+                    }
+                },
+                yAxis: {
+                    type: "value",
+                    name: "数值",
+                    nameGap: 18,
+                    min: 0,
+                    max: 100,
+                    splitNumber: 5,
+                    nameTextStyle: {
+                        color: palette.secondaryText,
+                        fontSize: 12
+                    },
+                    axisLabel: {
+                        color: palette.secondaryText,
+                        fontSize: 11
+                    },
+                    axisLine: {
+                        show: true,
+                        lineStyle: {
+                            color: palette.divider
+                        }
+                    },
+                    splitLine: {
+                        lineStyle: {
+                            color: palette.divider,
+                            type: "dashed",
+                            opacity: 0.7
+                        }
+                    }
+                },
+                series: [{
+                    name: "仿真数值",
+                    type: "line",
+                    smooth: 0.28,
+                    showSymbol: true,
+                    symbol: "circle",
+                    symbolSize: 7,
+                    data: values,
+                    lineStyle: {
+                        color: palette.accent,
+                        width: 3
+                    },
+                    itemStyle: {
+                        color: palette.accent,
+                        borderColor: palette.background,
+                        borderWidth: 2
+                    },
+                    areaStyle: {
+                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                            { offset: 0, color: hexToRgba(palette.accent, 0.32) },
+                            { offset: 1, color: hexToRgba(palette.accent, 0.02) }
+                        ])
+                    }
+                }]
+            }, {
+                notMerge: false,
+                lazyUpdate: false
+            });
+        }
+
+        window.updateSimulationData = function (nextNames, nextValues, nextPalette) {
+            if (Array.isArray(nextNames)) {
+                names = nextNames;
+            }
+            if (Array.isArray(nextValues)) {
+                values = nextValues;
+            }
+            if (nextPalette) {
+                palette = Object.assign({}, palette, nextPalette);
+            }
+            render();
+        };
+
+        window.addEventListener("resize", () => chart.resize());
+        render();
+    </script>
+</body>
+</html>

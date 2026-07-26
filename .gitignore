@@ -1,0 +1,23 @@
+# Unreal Engine 本地生成目录
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+
+# IDE 与系统文件
+.vs/
+.idea/
+.vscode/
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+.DS_Store
+Thumbs.db
+
+# 本地测试产物
+**/.playwright-cli/
+**/output/
+

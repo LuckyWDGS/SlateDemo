@@ -1,0 +1,20 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "1.0.0",
+  "FriendlyName": "Slate Theme Switcher",
+  "Description": "An extensible Day/Night theme registry with a one-click Slate demo panel.",
+  "Category": "Editor",
+  "CreatedBy": "Codex",
+  "CanContainContent": false,
+  "IsBetaVersion": false,
+  "Installed": false,
+  "EnabledByDefault": true,
+  "Modules": [
+    {
+      "Name": "SlateThemeSwitcher",
+      "Type": "Editor",
+      "LoadingPhase": "Default"
+    }
+  ]
+}

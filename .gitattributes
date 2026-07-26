@@ -1,0 +1,12 @@
+# ECharts 是随插件分发的第三方压缩脚本，不计入主要源码语言统计。
+*.min.js linguist-vendored
+
+# 固定文本文件换行规则，降低跨平台协作噪音。
+*.h text eol=lf
+*.cpp text eol=lf
+*.cs text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.ini text eol=lf
+*.html text eol=lf
+
