@@ -11,6 +11,12 @@
 5. [自定义控件与绘制](#5-自定义控件与绘制)
 6. [输入、焦点与拖拽](#6-输入焦点与拖拽)
 7. [性能、失效与调试工具](#7-性能失效与调试工具)
+8. [虚拟化列表、树与多列表格](#8-虚拟化列表树与多列表格)
+9. [命令、快捷键与 ToolMenus](#9-命令快捷键与-toolmenus)
+10. [Details Panel 属性定制](#10-details-panel-属性定制)
+11. [动画、Active Timer 与异步任务](#11-动画active-timer-与异步任务)
+12. [DPI、本地化、无障碍与可测试性](#12-dpi本地化无障碍与可测试性)
+13. [SWebBrowser 与 Slate/网页混合界面](#13-swebbrowser-与-slate网页混合界面)
 
 ---
 
@@ -1783,12 +1789,987 @@ FText GetStatusText() const
 
 ---
 
+## 8. 虚拟化列表、树与多列表格
+
+### 8.1 为什么不能把大量条目直接塞进 SScrollBox
+
+`SScrollBox` 会长期持有其中的所有子控件。几十项通常没问题，但数百或数千项会带来：
+
+- 大量 Widget 创建和共享指针分配。
+- 更重的 Prepass、布局与绘制遍历。
+- 数据更新时难以只刷新必要行。
+- 选择、排序、键盘导航需要自己实现。
+
+`SListView`、`STreeView` 和 `STileView` 属于 TableView 家族，会根据可见区域按需生成 Row。数据有一万条，并不意味着同时存在一万个 Row Widget。
+
+```text
+数据源 TArray<ItemType>
+        ↓
+TableView 计算当前可见索引
+        ↓
+OnGenerateRow 只生成可见 Row
+        ↓
+滚动后回收/生成新的可见 Row
+```
+
+### 8.2 ItemType 的常见选择
+
+Slate 列表的 `ItemType` 通常使用共享指针：
+
+```cpp
+struct FThemeListItem
+{
+    FName Id;
+    FText DisplayName;
+    FText Description;
+    bool bBuiltIn = false;
+};
+
+using FThemeListItemPtr = TSharedPtr<FThemeListItem>;
+```
+
+```cpp
+TArray<FThemeListItemPtr> ThemeItems;
+TSharedPtr<SListView<FThemeListItemPtr>> ThemeListView;
+```
+
+共享指针让条目在选择、菜单弹出和 Row 生成期间保持稳定身份。不要用 Row Widget 地址代表业务对象；Row 会随着虚拟化而更换。
+
+### 8.3 SListView 的完整闭环
+
+```cpp
+SAssignNew(ThemeListView, SListView<FThemeListItemPtr>)
+.ListItemsSource(&ThemeItems)
+.SelectionMode(ESelectionMode::Single)
+.OnGenerateRow(this, &SThemeLibrary::GenerateThemeRow)
+.OnSelectionChanged(this, &SThemeLibrary::HandleThemeSelected)
+.OnContextMenuOpening(this, &SThemeLibrary::BuildContextMenu);
+```
+
+```cpp
+TSharedRef<ITableRow> SThemeLibrary::GenerateThemeRow(
+    FThemeListItemPtr Item,
+    const TSharedRef<STableViewBase>& OwnerTable)
+{
+    return SNew(STableRow<FThemeListItemPtr>, OwnerTable)
+    .Padding(FMargin(8.0f, 4.0f))
+    [
+        SNew(STextBlock)
+        .Text(Item.IsValid() ? Item->DisplayName : FText::GetEmpty())
+    ];
+}
+```
+
+数据更新步骤：
+
+```cpp
+ThemeItems = BuildFilteredItems();
+ThemeListView->RequestListRefresh();
+```
+
+`RequestListRefresh()` 告诉列表在合适时机刷新，不要求调用者立即重建全部行。若只想滚动并选中某项，可使用 `RequestScrollIntoView(Item)` 和 `SetSelection(Item)`。
+
+### 8.4 OptionsSource 与 ListItemsSource 的生命周期
+
+列表只保存数据源数组的地址，不复制整个数组：
+
+```cpp
+.ListItemsSource(&ThemeItems)
+```
+
+所以 `ThemeItems` 必须是拥有该列表的对象成员，不能是 `Construct` 里的局部变量。这与当前插件中 `SComboBox` 的 `ThemeOptions` 成员是同一个原则。
+
+安全更新顺序通常是：
+
+1. 暂时保存当前选择的业务 Id。
+2. 更新成员数组。
+3. 调用 `RequestListRefresh()`。
+4. 根据 Id 查找新条目并恢复选择。
+
+### 8.5 多列表格：SMultiColumnTableRow
+
+当每项需要多列时，给 ListView 设置 HeaderRow，并让行继承 `SMultiColumnTableRow`：
+
+```cpp
+SAssignNew(ThemeListView, SListView<FThemeListItemPtr>)
+.ListItemsSource(&ThemeItems)
+.OnGenerateRow(this, &SThemeLibrary::GenerateThemeRow)
+.HeaderRow
+(
+    SNew(SHeaderRow)
+    + SHeaderRow::Column(TEXT("Name"))
+      .DefaultLabel(FText::FromString(TEXT("主题")))
+      .FillWidth(0.35f)
+    + SHeaderRow::Column(TEXT("Description"))
+      .DefaultLabel(FText::FromString(TEXT("说明")))
+      .FillWidth(0.55f)
+    + SHeaderRow::Column(TEXT("Type"))
+      .DefaultLabel(FText::FromString(TEXT("类型")))
+      .FillWidth(0.10f)
+);
+```
+
+```cpp
+class SThemeTableRow : public SMultiColumnTableRow<FThemeListItemPtr>
+{
+public:
+    SLATE_BEGIN_ARGS(SThemeTableRow) {}
+        SLATE_ARGUMENT(FThemeListItemPtr, Item)
+    SLATE_END_ARGS()
+
+    void Construct(
+        const FArguments& InArgs,
+        const TSharedRef<STableViewBase>& OwnerTable)
+    {
+        Item = InArgs._Item;
+        SMultiColumnTableRow::Construct(
+            FSuperRowType::FArguments().Padding(FMargin(6.0f, 3.0f)),
+            OwnerTable);
+    }
+
+    virtual TSharedRef<SWidget> GenerateWidgetForColumn(
+        const FName& ColumnName) override;
+
+private:
+    FThemeListItemPtr Item;
+};
+```
+
+`GenerateWidgetForColumn` 根据稳定的 Column Id 返回内容。表头显示文本可以本地化，但 Column Id 不应随语言变化。
+
+### 8.6 STreeView 的数据模型
+
+树不是让 Row 自己寻找子控件，而是通过 `OnGetChildren` 从业务模型取子项：
+
+```cpp
+struct FThemeTreeNode
+{
+    FText Label;
+    TArray<TSharedPtr<FThemeTreeNode>> Children;
+};
+```
+
+```cpp
+SAssignNew(ThemeTree, STreeView<TSharedPtr<FThemeTreeNode>>)
+.TreeItemsSource(&RootNodes)
+.OnGenerateRow(this, &SThemeTreePanel::GenerateRow)
+.OnGetChildren(this, &SThemeTreePanel::GetChildren);
+```
+
+```cpp
+void SThemeTreePanel::GetChildren(
+    TSharedPtr<FThemeTreeNode> Parent,
+    TArray<TSharedPtr<FThemeTreeNode>>& OutChildren) const
+{
+    if (Parent.IsValid())
+    {
+        OutChildren.Append(Parent->Children);
+    }
+}
+```
+
+展开状态由 TreeView 管理，但如果重建了全部节点对象，旧指针身份会消失，展开和选择状态也可能丢失。稳定 Id 或复用模型对象有助于恢复状态。
+
+### 8.7 搜索、过滤和排序应该放在哪里
+
+推荐分成两层数组：
+
+```text
+AllThemeItems：完整数据
+       ↓ 过滤 + 排序
+VisibleThemeItems：交给 ListView 的视图数据
+```
+
+过滤时先把搜索文本标准化；数据量大或搜索昂贵时使用防抖。排序只调整数据源顺序，然后 `RequestListRefresh()`，不要在每个 Row 的 Getter 中重复排序。
+
+### 8.8 本章练习
+
+1. 将主题下拉框扩展成带搜索框的 `SListView`。
+2. 加入“名称、描述、来源”三列，并实现表头排序。
+3. 用 `STreeView` 表示“内置主题 / 用户主题 / 主题变体”。
+4. 刷新数据后恢复选中项、滚动位置和展开状态。
+
+---
+
+## 9. 命令、快捷键与 ToolMenus
+
+### 9.1 命令系统解决什么问题
+
+直接给菜单项绑定 `FUIAction` 很适合单个入口。但当同一操作同时出现在菜单、工具栏、右键菜单和快捷键中时，应使用命令系统：
+
+```text
+TCommands：定义名称、说明、图标、默认快捷键
+       ↓
+FUICommandList：映射 Execute / CanExecute / IsChecked
+       ↓
+ToolMenus、工具栏和键盘复用同一个 CommandInfo
+```
+
+命令描述“用户可以做什么”，命令列表描述“当前上下文中怎么做、能不能做”。
+
+### 9.2 定义 TCommands
+
+```cpp
+class FSlateThemeCommands final : public TCommands<FSlateThemeCommands>
+{
+public:
+    FSlateThemeCommands()
+        : TCommands<FSlateThemeCommands>(
+            TEXT("SlateThemeSwitcher"),
+            NSLOCTEXT("Contexts", "SlateThemeSwitcher", "Slate Theme Switcher"),
+            NAME_None,
+            FAppStyle::GetAppStyleSetName())
+    {
+    }
+
+    virtual void RegisterCommands() override;
+
+    TSharedPtr<FUICommandInfo> OpenPanel;
+    TSharedPtr<FUICommandInfo> ToggleTheme;
+};
+```
+
+```cpp
+#define LOCTEXT_NAMESPACE "SlateThemeCommands"
+
+void FSlateThemeCommands::RegisterCommands()
+{
+    UI_COMMAND(
+        OpenPanel,
+        "打开主题面板",
+        "打开 Slate Theme Switcher。",
+        EUserInterfaceActionType::Button,
+        FInputChord(EModifierKey::Control | EModifierKey::Alt, EKeys::T));
+
+    UI_COMMAND(
+        ToggleTheme,
+        "切换主题",
+        "切换到下一个已注册主题。",
+        EUserInterfaceActionType::Button,
+        FInputChord());
+}
+
+#undef LOCTEXT_NAMESPACE
+```
+
+默认快捷键只是初始值；编辑器可以允许用户在 Keyboard Shortcuts 中重新绑定。
+
+### 9.3 映射 FUICommandList
+
+```cpp
+CommandList = MakeShared<FUICommandList>();
+
+CommandList->MapAction(
+    FSlateThemeCommands::Get().OpenPanel,
+    FExecuteAction::CreateRaw(this, &FSlateThemeSwitcherModule::OpenThemeSwitcher));
+
+CommandList->MapAction(
+    FSlateThemeCommands::Get().ToggleTheme,
+    FExecuteAction::CreateRaw(this, &FSlateThemeSwitcherModule::ToggleTheme),
+    FCanExecuteAction::CreateRaw(this, &FSlateThemeSwitcherModule::CanToggleTheme));
+```
+
+切换类命令还可以提供 `FIsActionChecked`，同时将动作类型声明为 `ToggleButton`。UI 的勾选状态就会来自同一业务状态，而不是菜单自己保存一份副本。
+
+### 9.4 注册和注销顺序
+
+```cpp
+void FSlateThemeSwitcherModule::StartupModule()
+{
+    FSlateThemeCommands::Register();
+    CommandList = MakeShared<FUICommandList>();
+    MapCommands();
+    // 然后注册菜单与 Tab
+}
+
+void FSlateThemeSwitcherModule::ShutdownModule()
+{
+    // 先移除菜单与 Tab
+    CommandList.Reset();
+    FSlateThemeCommands::Unregister();
+}
+```
+
+不要在 Commands 注册之前调用 `FSlateThemeCommands::Get()`；也不要在菜单仍引用命令时过早注销。
+
+### 9.5 让 ToolMenus 使用命令
+
+```cpp
+void FSlateThemeSwitcherModule::RegisterMenus()
+{
+    FToolMenuOwnerScoped OwnerScoped(this);
+
+    UToolMenu* Menu = UToolMenus::Get()->ExtendMenu(
+        TEXT("LevelEditor.MainMenu.Window"));
+    FToolMenuSection& Section = Menu->FindOrAddSection(TEXT("WindowLayout"));
+
+    Section.AddMenuEntry(
+        FSlateThemeCommands::Get().OpenPanel,
+        CommandList);
+}
+```
+
+菜单因此自动获得命令的标签、说明、图标、快捷键和可用状态。工具栏也可以引用相同命令，不需要复制执行委托。
+
+### 9.6 CanExecute 为什么重要
+
+禁用状态应表达真实业务约束。例如：
+
+- 没有注册任何主题时不能“切换主题”。
+- 异步导入进行中时不能重复“导入”。
+- 没有选中列表项时不能“删除主题”。
+
+`CanExecute` 应快速、无副作用。不要在菜单每次查询可用状态时执行磁盘扫描。
+
+### 9.7 快捷键作用域与冲突
+
+全局编辑器命令要谨慎选择快捷键。常见策略：
+
+- 插件主入口可以有全局快捷键。
+- 只对某个面板有意义的命令，附加到该面板或 Tab 的 CommandList。
+- 文本输入框获得焦点时，不要抢占常用编辑按键。
+- 使用 Input Binding Editor 检查冲突，并允许用户覆盖默认绑定。
+
+### 9.8 本章练习
+
+1. 为“打开主题面板”定义 `Ctrl+Alt+T` 默认快捷键。
+2. 把同一命令同时添加到 Window 菜单和工具栏。
+3. 添加“下一个主题”命令，在主题少于两个时禁用。
+4. 添加一个 ToggleButton 命令，让菜单勾选状态始终来自管理器。
+
+---
+
+## 10. Details Panel 属性定制
+
+### 10.1 Details Panel 与普通 Slate 面板的区别
+
+普通 Slate 面板完全由你组织控件树；Details Panel 根据 `UCLASS` / `USTRUCT` 的反射属性自动生成编辑 UI。
+
+当默认属性排列不够用时，有两类定制：
+
+- `IDetailCustomization`：定制一个 UObject 类的整个详情面板。
+- `IPropertyTypeCustomization`：定制某个 USTRUCT 属性类型的标题行和子项。
+
+它们仍然使用 Slate 生成内容，但属性读取、撤销重做、多对象编辑和元数据由 PropertyEditor 系统协助处理。
+
+### 10.2 模块依赖
+
+编辑器模块的 `Build.cs` 通常增加：
+
+```csharp
+PrivateDependencyModuleNames.AddRange(new[]
+{
+    "PropertyEditor",
+    "EditorSubsystem",
+    "UnrealEd"
+});
+```
+
+定制代码应放在 Editor 模块，避免运行时目标依赖编辑器模块。
+
+### 10.3 IDetailCustomization 基本结构
+
+```cpp
+class FThemeSettingsCustomization final : public IDetailCustomization
+{
+public:
+    static TSharedRef<IDetailCustomization> MakeInstance()
+    {
+        return MakeShared<FThemeSettingsCustomization>();
+    }
+
+    virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
+};
+```
+
+```cpp
+void FThemeSettingsCustomization::CustomizeDetails(
+    IDetailLayoutBuilder& DetailBuilder)
+{
+    TSharedRef<IPropertyHandle> ThemeIdProperty =
+        DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UThemeSettings, ThemeId));
+
+    IDetailCategoryBuilder& Category =
+        DetailBuilder.EditCategory(TEXT("Theme"));
+
+    Category.AddProperty(ThemeIdProperty);
+
+    Category.AddCustomRow(FText::FromString(TEXT("Preview")))
+    .WholeRowContent()
+    [
+        SNew(SButton)
+        .Text(FText::FromString(TEXT("预览当前主题")))
+        .OnClicked_Lambda([]()
+        {
+            // 调用主题预览逻辑
+            return FReply::Handled();
+        })
+    ];
+}
+```
+
+使用 `GET_MEMBER_NAME_CHECKED` 可以在属性重命名后尽早暴露编译错误。
+
+### 10.4 为什么优先使用 IPropertyHandle
+
+不要通过裸 UObject 指针直接修改 Details 中的属性。`IPropertyHandle` 帮助处理：
+
+- PreEditChange / PostEditChange
+- Undo / Redo 事务
+- 多对象同时编辑
+- 数组、Map、Set 与嵌套属性
+- 元数据和编辑条件
+- 值为 Multiple Values 的状态
+
+```cpp
+FName ThemeId;
+if (ThemeIdProperty->GetValue(ThemeId) == FPropertyAccess::Success)
+{
+    // 使用读取结果
+}
+
+ThemeIdProperty->SetValue(NewThemeId);
+```
+
+### 10.5 自定义 NameContent 与 ValueContent
+
+```cpp
+Category.AddCustomRow(FText::FromString(TEXT("Theme Accent")))
+.NameContent()
+[
+    SNew(STextBlock)
+    .Text(FText::FromString(TEXT("强调色")))
+    .Font(IDetailLayoutBuilder::GetDetailFont())
+]
+.ValueContent()
+.MinDesiredWidth(220.0f)
+[
+    SNew(SColorBlock)
+    .Color(this, &FThemeSettingsCustomization::GetAccentColor)
+    .OnMouseButtonDown(this, &FThemeSettingsCustomization::OpenColorPicker)
+];
+```
+
+Details Panel 有自己的字体、间距和行高规范。尽量使用 Detail 系统提供的字体与默认属性控件，让自定义行与编辑器原生界面一致。
+
+### 10.6 注册 Class Layout
+
+```cpp
+FPropertyEditorModule& PropertyEditor =
+    FModuleManager::LoadModuleChecked<FPropertyEditorModule>(TEXT("PropertyEditor"));
+
+PropertyEditor.RegisterCustomClassLayout(
+    UThemeSettings::StaticClass()->GetFName(),
+    FOnGetDetailCustomizationInstance::CreateStatic(
+        &FThemeSettingsCustomization::MakeInstance));
+
+PropertyEditor.NotifyCustomizationModuleChanged();
+```
+
+关闭模块时：
+
+```cpp
+if (FModuleManager::Get().IsModuleLoaded(TEXT("PropertyEditor")))
+{
+    FPropertyEditorModule& PropertyEditor =
+        FModuleManager::GetModuleChecked<FPropertyEditorModule>(TEXT("PropertyEditor"));
+
+    PropertyEditor.UnregisterCustomClassLayout(
+        UThemeSettings::StaticClass()->GetFName());
+}
+```
+
+注册名和注销名必须完全一致，否则热重载后可能留下旧定制。
+
+### 10.7 Property Type Customization
+
+如果多个类都包含同一个 `FThemePalette` 结构，应该定制结构类型，而不是在每个类的 Details 中重复代码。
+
+```cpp
+class FThemePaletteCustomization final : public IPropertyTypeCustomization
+{
+public:
+    static TSharedRef<IPropertyTypeCustomization> MakeInstance();
+
+    virtual void CustomizeHeader(
+        TSharedRef<IPropertyHandle> StructPropertyHandle,
+        FDetailWidgetRow& HeaderRow,
+        IPropertyTypeCustomizationUtils& Utils) override;
+
+    virtual void CustomizeChildren(
+        TSharedRef<IPropertyHandle> StructPropertyHandle,
+        IDetailChildrenBuilder& ChildBuilder,
+        IPropertyTypeCustomizationUtils& Utils) override;
+};
+```
+
+它通过 `RegisterCustomPropertyTypeLayout` 注册，使用结构类型名而不是拥有它的 UObject 类名。
+
+### 10.8 刷新与生命周期
+
+当外部主题注册表变化会改变 Details 的行结构时，可以请求刷新：
+
+```cpp
+DetailBuilder.ForceRefreshDetails();
+```
+
+不要每帧刷新 Details。定制对象可能随着选择变化被销毁；绑定外部委托时应保存 Handle，并在定制对象析构或生命周期结束时解除。
+
+### 10.9 本章练习
+
+1. 创建 `UThemeSettings`，让默认 Details 显示主题 Id 和强调色。
+2. 使用 `IDetailCustomization` 添加实时主题预览行。
+3. 用 `IPropertyHandle` 修改属性，验证 Undo / Redo。
+4. 将色板提取为 `FThemePalette`，再用 `IPropertyTypeCustomization` 复用显示逻辑。
+
+---
+
+## 11. 动画、Active Timer 与异步任务
+
+### 11.1 三种“随时间变化”的工具
+
+| 机制 | 适合 | 不适合 |
+| --- | --- | --- |
+| `Tick` | 必须逐帧响应的交互或连续状态 | 低频轮询、昂贵任务 |
+| Active Timer | 延迟、周期更新、按需保持活跃 | 后台线程工作、阻塞 IO |
+| `FCurveSequence` | Slate 属性过渡和缓动动画 | 业务定时器、文件扫描 |
+
+选择标准不是“哪个 API 最方便”，而是更新频率、面板不可见时是否仍需运行、工作是否必须在 Game Thread 上执行。
+
+### 11.2 Active Timer 的注册与停止
+
+当前插件使用 Active Timer 每 300ms 生成一次仿真快照：
+
+```cpp
+SimulationTimerHandle = RegisterActiveTimer(
+    0.3f,
+    FWidgetActiveTimerDelegate::CreateSP(
+        this,
+        &SThemeSwitcherPanel::HandleSimulationTick));
+```
+
+```cpp
+EActiveTimerReturnType SThemeSwitcherPanel::HandleSimulationTick(
+    double InCurrentTime,
+    float InDeltaTime)
+{
+    if (bSimulationRunning)
+    {
+        UpdateSimulationData();
+        PushSimulationData();
+    }
+
+    return EActiveTimerReturnType::Continue;
+}
+```
+
+若任务已经结束，返回 `Stop`；如果保存了 Handle，也可以主动注销：
+
+```cpp
+if (SimulationTimerHandle.IsValid())
+{
+    UnRegisterActiveTimer(SimulationTimerHandle.ToSharedRef());
+    SimulationTimerHandle.Reset();
+}
+```
+
+“暂停仿真”和“停止 Timer”并不是同一件事。暂停时间很长时，停止 Timer 更省；需要随时轻量恢复时，可以保留 Timer 但跳过更新。
+
+### 11.3 用 FCurveSequence 做缓动
+
+```cpp
+FCurveSequence HoverSequence;
+FCurveHandle HoverCurve;
+
+void SAnimatedThemeCard::Construct(const FArguments& InArgs)
+{
+    HoverCurve = HoverSequence.AddCurve(
+        0.0f,
+        0.18f,
+        ECurveEaseFunction::QuadOut);
+}
+```
+
+鼠标进入和离开时播放正向或反向动画：
+
+```cpp
+void SAnimatedThemeCard::OnMouseEnter(
+    const FGeometry& MyGeometry,
+    const FPointerEvent& MouseEvent)
+{
+    HoverSequence.Play(SharedThis(this));
+}
+
+void SAnimatedThemeCard::OnMouseLeave(
+    const FPointerEvent& MouseEvent)
+{
+    HoverSequence.Reverse();
+}
+```
+
+在属性 Getter 或 `OnPaint` 中读取 `HoverCurve.GetLerp()`，得到 0～1 的进度，再插值颜色、透明度或 Render Transform。动画值应驱动视觉，不应在 Getter 中修改业务状态。
+
+### 11.4 Layout 动画与 Render Transform
+
+改变 Padding、Desired Size 会触发布局；改变 Render Transform 通常只影响绘制阶段。纯视觉位移、缩放和淡入淡出优先考虑 Render Transform 与透明度，这比每帧重排控件树轻。
+
+但 Render Transform 不会天然改变周围控件的布局占位。需要其他控件让路时，仍必须使用 Layout 变化。
+
+### 11.5 昂贵工作必须离开 Game Thread
+
+文件扫描、解析大型配置和网络请求不应在 Slate 回调或属性 Getter 中同步执行。典型模式：
+
+```text
+Game Thread：收集不可变输入，显示“加载中”
+       ↓
+后台线程：只处理线程安全的数据
+       ↓
+Game Thread：验证控件仍存在，提交结果并刷新 UI
+```
+
+```cpp
+TWeakPtr<SThemeLibrary> WeakThis = SharedThis(this);
+const FString SearchRoot = RequestedRoot;
+
+AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask,
+    [WeakThis, SearchRoot]()
+    {
+        TArray<FThemeFileInfo> Results = ScanThemeFiles(SearchRoot);
+
+        AsyncTask(ENamedThreads::GameThread,
+            [WeakThis, Results = MoveTemp(Results)]() mutable
+            {
+                if (TSharedPtr<SThemeLibrary> Pinned = WeakThis.Pin())
+                {
+                    Pinned->ApplyScanResults(MoveTemp(Results));
+                }
+            });
+    });
+```
+
+弱指针检查很重要：后台任务结束时，用户可能已经关闭了 Tab。
+
+### 11.6 线程边界规则
+
+- 大多数 Slate Widget 操作只能在 Game Thread 进行。
+- 不要在后台线程读取会变化的 Widget 属性。
+- UObject 是否能在后台访问取决于具体 API；默认按不安全处理。
+- 后台线程使用输入副本和普通数据结构，完成后回 Game Thread 更新 UI。
+- 关闭模块时，要考虑尚未完成的任务，避免回调进入已卸载模块代码。
+
+### 11.7 防止旧任务覆盖新结果
+
+用户连续输入搜索词时，较早任务可能更晚完成。可以使用请求序号：
+
+```cpp
+const uint64 ThisRequest = ++LatestRequestId;
+```
+
+结果回到 Game Thread 后，只有 `ThisRequest == LatestRequestId` 才提交。取消标志、任务句柄或可取消异步框架也可以实现相同目标。
+
+### 11.8 本章练习
+
+1. 给主题卡片增加 0.18 秒悬停淡入动画。
+2. 将仿真 Timer 改成停止时真正注销、继续时重新注册。
+3. 后台扫描主题 JSON 文件，完成后用 `RequestListRefresh()` 更新列表。
+4. 快速连续搜索，验证旧结果不会覆盖新结果。
+
+---
+
+## 12. DPI、本地化、无障碍与可测试性
+
+### 12.1 成熟 UI 不只是在当前电脑上“看起来没问题”
+
+编辑器工具至少要面对：
+
+- 不同窗口大小和高 DPI 缩放。
+- 中文、英文以及更长的本地化文本。
+- 键盘操作和焦点反馈。
+- 色觉差异与足够对比度。
+- 自动化测试和可重复验证。
+
+这些不是最后补丁，而会反过来影响布局和数据流设计。
+
+### 12.2 DPI 与尺寸策略
+
+Slate 的几何会受到应用缩放和显示器 DPI 影响。实践原则：
+
+- 不要用屏幕像素假设控件最终物理大小。
+- 优先 Auto、Fill、MinDesiredWidth 和可换行文本。
+- 图标资源准备合适分辨率，避免放大后模糊。
+- 自定义绘制使用 `AllottedGeometry`，不要硬编码绝对屏幕坐标。
+- 多显示器测试窗口跨越不同 DPI 时的表现。
+
+`HeightOverride(32)` 表达 Slate Unit 中的逻辑高度，不等同于永远占 32 个物理像素。
+
+### 12.3 使用 FText，而不是把 FString 当界面文本
+
+| 类型 | 主要用途 |
+| --- | --- |
+| `FText` | 面向用户、可本地化和格式化的文本 |
+| `FString` | 普通可变字符串、路径、序列化中间值 |
+| `FName` | 稳定标识、快速比较、样式键和注册 Id |
+
+显示文本使用 `LOCTEXT`：
+
+```cpp
+#define LOCTEXT_NAMESPACE "SlateThemeSwitcher"
+
+const FText Label = LOCTEXT("ToggleTheme", "切换主题");
+
+#undef LOCTEXT_NAMESPACE
+```
+
+Key 在同一 Namespace 中必须稳定且语义清楚。不要根据运行时字符串动态生成 `LOCTEXT` Key。
+
+### 12.4 格式化与复数
+
+不要用字符串拼接构造面向用户的句子：
+
+```cpp
+const FText Status = FText::Format(
+    LOCTEXT("ThemeCount", "已注册 {0} 个主题"),
+    FText::AsNumber(ThemeCount));
+```
+
+不同语言的词序不一样，完整格式字符串才能让译者调整顺序。日期、时间、数字和百分比也优先使用 `FText` 的区域化格式。
+
+### 12.5 长文本和双向文本
+
+- 标签不要依赖刚好容纳中文的固定宽度。
+- 说明文本启用 `AutoWrapText`，并提供合理可用宽度。
+- 按钮至少留出文本扩展空间。
+- 用最长目标语言测试菜单、表头和弹窗。
+- 图标与文字的方向关系要考虑从右到左语言。
+
+布局被长文本撑开时，应修正容器约束和换行策略，而不是截掉所有文字。
+
+### 12.6 键盘与焦点可见性
+
+最低要求：
+
+- 所有主要操作都能通过 Tab、方向键或命令快捷键到达。
+- 当前焦点有明显视觉反馈。
+- 弹窗打开后焦点进入弹窗，关闭后合理恢复。
+- Escape 能关闭临时菜单或取消操作。
+- 未处理按键返回 `Unhandled`，不破坏编辑器全局快捷键。
+
+用纯键盘完整走一遍功能，是最便宜也最有效的可访问性测试之一。
+
+### 12.7 无障碍语义与颜色
+
+Slate 控件具有无障碍行为、摘要文本与子控件可访问性相关设置。组合现有标准控件通常比完全自绘更容易获得正确语义。
+
+设计时还要注意：
+
+- 不要只靠红/绿区分状态；同时使用文本、图标或形状。
+- 正文和背景保持足够对比度。
+- Disabled 状态仍应可辨认，不要淡到完全看不清。
+- 图标按钮需要 Tooltip 或可访问名称。
+- 动画不应成为理解状态的唯一方式。
+
+### 12.8 让控件更容易测试
+
+可测试的 Slate 控件通常具有：
+
+- 业务状态集中在管理器或 ViewModel，而不是散落在 Widget 中。
+- 显示 Getter 无副作用。
+- 按钮调用明确的方法或命令。
+- 稳定的 Tab Id、Command Id、Widget 类型和可见文本。
+- 时间与随机数可以注入或使用固定种子。
+
+当前插件使用 `FRandomStream` 管理仿真数据；测试时可以固定 Seed，使一系列快照可重复。
+
+### 12.9 测试矩阵
+
+| 维度 | 建议状态 |
+| --- | --- |
+| 窗口 | 最窄、常用宽度、最大化 |
+| DPI | 100%、150%、200% |
+| 主题 | Day、Night、第三方扩展主题 |
+| 文本 | 中文、英文、长说明、空文本 |
+| 输入 | 鼠标、纯键盘、快捷键 |
+| 数据 | 空列表、单项、大量条目、错误数据 |
+| 生命周期 | 首次打开、重复打开、关闭、热重载 |
+
+### 12.10 本章练习
+
+1. 将界面中所有面向用户的 `FString` 替换为稳定 Key 的 `FText`。
+2. 在 150% DPI 和窄 Tab 下检查主题面板。
+3. 不使用鼠标完成打开、切换主题、停止仿真和关闭 Tab。
+4. 固定随机种子，为仿真快照编写可重复的逻辑测试。
+
+---
+
+## 13. SWebBrowser 与 Slate/网页混合界面
+
+### 13.1 什么时候适合混合界面
+
+Slate 擅长编辑器集成、原生输入、菜单、命令和普通工具控件；网页渲染擅长复杂图表、富文本和成熟 Web 可视化库。
+
+当前插件采用的边界是：
+
+```text
+Slate/C++：主题、仿真状态、定时器、历史数据、启停按钮
+                         ↓ JSON 快照
+SWebBrowser/CEF：ECharts 图表渲染
+```
+
+网页只展示 C++ 提供的完整状态，不再自己生成随机数或启动独立 Timer，因此不会出现两套状态源。
+
+### 13.2 模块依赖与初始化
+
+`Build.cs` 需要：
+
+```csharp
+PrivateDependencyModuleNames.AddRange(new[]
+{
+    "WebBrowser",
+    "Json",
+    "Projects"
+});
+```
+
+创建 `SWebBrowser` 之前确保 WebBrowser 模块已加载：
+
+```cpp
+IWebBrowserModule& WebBrowserModule = IWebBrowserModule::Get();
+if (!WebBrowserModule.IsWebModuleAvailable())
+{
+    UE_LOG(LogTemp, Error, TEXT("WebBrowser 模块不可用。"));
+}
+```
+
+缺少这一步时，某些环境中浏览器窗口可能创建失败，表现为长期停在加载动画。
+
+### 13.3 本地资源的可靠加载策略
+
+直接导航 `file:///.../index.html` 可能遇到 CEF 本地协议、跨域或子资源读取限制。当前插件采用完全离线的内存文档：
+
+1. 用 `IPluginManager` 找到插件目录。
+2. 读取 `Resources/Web/realtime-chart.html`。
+3. 读取本地 `echarts.min.js`。
+4. 把外部 `<script src>` 替换成内联脚本。
+5. 使用 `ContentsToLoad` 交给 `SWebBrowser`。
+
+```cpp
+SAssignNew(ChartBrowser, SWebBrowser)
+.InitialURL(TEXT("http://slate-theme-switcher.local/#text/html"))
+.ContentsToLoad(TOptional<FString>(ChartDocument))
+.ShowControls(false)
+.ShowAddressBar(false)
+.BrowserFrameRate(30)
+.OnLoadCompleted(this, &SThemeSwitcherPanel::HandleChartLoaded)
+.OnLoadError(this, &SThemeSwitcherPanel::HandleChartLoadError);
+```
+
+虚拟 URL 提供文档上下文，`ContentsToLoad` 才是真正内容；资源完全内联后不需要网络访问。
+
+### 13.4 等页面 Ready 后再推送
+
+Widget 已创建不代表 JavaScript 已加载。正确流程：
+
+```text
+创建 SWebBrowser
+      ↓
+CEF 加载内存页面
+      ↓
+OnLoadCompleted
+      ↓
+首次 PushSimulationData
+      ↓
+后续 Active Timer 推送快照
+```
+
+在加载完成前调用 `ExecuteJavascript`，脚本可能因为页面函数尚未定义而没有效果。可以保存 `bBrowserReady` 状态，失败时显示清楚的 Slate 错误提示和日志。
+
+### 13.5 C++ 到 JavaScript 的安全数据桥
+
+不要手工拼接包含用户文本的 JavaScript 字符串。使用 UE Json API 序列化：
+
+```cpp
+TSharedRef<FJsonObject> Payload = MakeShared<FJsonObject>();
+Payload->SetBoolField(TEXT("running"), bSimulationRunning);
+Payload->SetStringField(TEXT("themeId"), CurrentThemeId.ToString());
+
+FString PayloadJson;
+TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadJson);
+FJsonSerializer::Serialize(Payload, Writer);
+
+const FString Script = FString::Printf(
+    TEXT("window.updateDashboard && window.updateDashboard(%s);"),
+    *PayloadJson);
+
+ChartBrowser->ExecuteJavascript(Script);
+```
+
+Json Serializer 会正确处理引号、换行与转义，避免脚本语法破坏和注入风险。
+
+### 13.6 快照协议应当完整、可版本化
+
+推荐每次推送一个自洽快照：
+
+```json
+{
+  "schemaVersion": 1,
+  "running": true,
+  "theme": {
+    "background": "#10131A",
+    "text": "#F0F3F8",
+    "accent": "#4DA3FF"
+  },
+  "stations": ["站点 A", "站点 B"],
+  "timestamps": ["14:30:00.000", "14:30:00.300"],
+  "load": [[42.10, 43.02], [61.22, 60.88]]
+}
+```
+
+完整快照比许多零散脚本调用更容易调试。`schemaVersion` 让网页在 C++ 数据结构升级后能明确判断兼容性。
+
+### 13.7 网页到 C++ 的边界
+
+如果网页只负责展示，尽量让控制操作留在 Slate 中。确实需要网页回调 C++ 时，应：
+
+- 只暴露最小接口。
+- 验证所有来自网页的数据。
+- 不让网页直接持有核心业务对象生命周期。
+- 明确调用发生在哪个线程。
+- 页面卸载和 Tab 关闭时解除绑定。
+
+对于主题切换、启动/停止等编辑器命令，原生 Slate 按钮通常更易测试，也更符合编辑器输入和焦点体系。
+
+### 13.8 性能与刷新频率
+
+- 浏览器帧率不必等于编辑器最大帧率，图表常用 30 FPS 已足够。
+- C++ 快照频率和网页渲染频率可以不同。
+- 避免每次更新重建整个 ECharts 实例；更新 series 数据即可。
+- 页面隐藏或 Tab 关闭后停止不必要的数据推送。
+- 大型历史数组应限制窗口长度，当前插件使用固定 32 点历史。
+
+### 13.9 错误处理与调试
+
+至少记录：
+
+- 插件目录未找到。
+- HTML 或 JS 文件读取失败。
+- WebBrowser 模块不可用。
+- 页面加载失败。
+- Json 序列化失败或协议版本不匹配。
+
+浏览器端也应捕获初始化异常并在页面中显示可读错误。不要只留下一个永远旋转的 Loading 图标。
+
+### 13.10 本章练习
+
+1. 用内存 HTML 创建一个只显示“Hello Slate”的 `SWebBrowser`。
+2. 从 C++ 序列化主题名和强调色，调用 JavaScript 更新页面。
+3. 加入 `schemaVersion`，让网页拒绝未知协议并显示错误。
+4. 关闭 Tab 后确认 Active Timer、浏览器引用和事件委托都已释放。
+
+---
+
 ## 后续可继续追加的专题
 
-- `SListView`、`STreeView` 与多列列表的完整实战。
-- `FUICommandList`、`TCommands` 与快捷键体系。
-- Details Panel：`IDetailCustomization` 与 `IPropertyTypeCustomization`。
 - Asset Editor Toolkit 与自定义资源编辑器。
-- Slate 动画、曲线与 Active Timer。
-- DPI、本地化、无障碍与键盘导航。
 - 主题切换插件的完整工程实现与 UE 5.8 编译验证。
+- Slate 自动化测试与性能基准实战。
+- Editor Utility Widget、UMG 与原生 Slate 的混合架构。
